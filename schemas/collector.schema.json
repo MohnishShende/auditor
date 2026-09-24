@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LinuxServerAuditCollectorResult",
+  "type": "object",
+  "required": ["collector", "status", "data", "duration_seconds"],
+  "properties": {
+    "collector": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "PARTIAL",
+        "SKIPPED",
+        "UNSUPPORTED",
+        "PERMISSION_DENIED",
+        "DEPENDENCY_MISSING",
+        "FAILED"
+      ]
+    },
+    "data": { "type": "object" },
+    "duration_seconds": { "type": "number" },
+    "error": { "type": ["string", "null"] },
+    "message": { "type": ["string", "null"] },
+    "raw_available": { "type": "boolean" }
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LinuxServerAuditCanonicalReport",
+  "description": "Canonical schema for Linux Server Audit output",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "metadata",
+    "system",
+    "collectors",
+    "topology",
+    "analysis"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["1.0"]
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "tool_name",
+        "tool_version",
+        "timestamp",
+        "hostname",
+        "profile",
+        "duration_seconds",
+        "privileges_available"
+      ],
+      "properties": {
+        "tool_name": { "type": "string" },
+        "tool_version": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "hostname": { "type": "string" },
+        "profile": { "type": "string" },
+        "duration_seconds": { "type": "number" },
+        "privileges_available": { "type": "boolean" },
+        "operating_user": { "type": "string" }
+      }
+    },
+    "system": { "type": "object" },
+    "hardware": { "type": "object" },
+    "storage": { "type": "object" },
+    "network": { "type": "object" },
+    "security": { "type": "object" },
+    "services": { "type": "object" },
+    "docker": { "type": "object" },
+    "caddy": { "type": "object" },
+    "applications": { "type": "object" },
+    "collectors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status", "duration_seconds"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "SUCCESS",
+              "PARTIAL",
+              "SKIPPED",
+              "UNSUPPORTED",
+              "PERMISSION_DENIED",
+              "DEPENDENCY_MISSING",
+              "FAILED"
+            ]
+          },
+          "duration_seconds": { "type": "number" },
+          "error": { "type": ["string", "null"] },
+          "message": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "properties": {
+        "nodes": { "type": "array" },
+        "edges": { "type": "array" },
+        "storage_chains": { "type": "array" },
+        "service_routes": { "type": "array" }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "properties": {
+        "health": { "type": "array" },
+        "exposure": { "type": "array" },
+        "conflicts": { "type": "array" },
+        "drift": { "type": "object" }
+      }
+    }
+  }
+}

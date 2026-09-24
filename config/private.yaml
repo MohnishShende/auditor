@@ -1,0 +1,31 @@
+# Linux Server Audit - Private Profile
+# Intended for server owners: preserves internal IPs, MACs, and hardware IDs while redacting credentials.
+version: "1.0"
+profile: "private"
+
+output:
+  directory: "audits"
+  formats:
+    - "markdown"
+    - "json"
+    - "html"
+  generate_checksums: true
+  generate_manifest: true
+
+execution:
+  timeout_seconds: 30
+  parallel_collectors: true
+  allow_sudo: true
+
+network:
+  allow_outbound: false
+
+sanitization:
+  redact_passwords: true
+  redact_tokens: true
+  redact_private_keys: true
+  redact_env_secrets: true
+  mask_ips: false
+  mask_macs: false
+  mask_serials: false
+  mask_uuids: false

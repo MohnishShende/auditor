@@ -1,0 +1,63 @@
+direction: down
+
+title: "Storage & Network Topology Correlator" {
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+storage_topology: "Storage Topology Pipeline" {
+  style.fill: "#f8fafc"
+  style.stroke: "#0284c7"
+
+  pdev: "Physical NVMe / SSD / HDD\n(/dev/nvme0n1, /dev/sda)" {
+    shape: cylinder
+  }
+
+  enc: "LUKS Encryption Layer\n(/dev/mapper/cryptroot)" {
+    shape: rectangle
+  }
+
+  lvm: "LVM Volume Group & Logical Volumes\n(vg0 -> lv_root, lv_data)" {
+    shape: rectangle
+  }
+
+  fs: "Filesystem Layer\n(ext4, xfs, btrfs, zfs)" {
+    shape: rectangle
+  }
+
+  mnt: "Mount Points\n(/, /home, /var/data)" {
+    shape: package
+  }
+
+  pdev -> enc: "mapped into"
+  enc -> lvm: "contains PV"
+  lvm -> fs: "formatted as"
+  fs -> mnt: "mounted at"
+}
+
+network_topology: "Network Exposure Topology" {
+  style.fill: "#f8fafc"
+  style.stroke: "#16a34a"
+
+  nic: "Network Interface\n(eth0, wlan0, wg0)" {
+    shape: rectangle
+  }
+
+  fw: "Firewall / NAT Rules\n(nftables, iptables, ufw)" {
+    shape: rectangle
+  }
+
+  port: "Listening Socket\n(0.0.0.0:443, 127.0.0.1:5432)" {
+    shape: circle
+  }
+
+  proc: "Owner Process & Service\n(caddy, postgresql, docker-proxy)" {
+    shape: package
+  }
+
+  nic -> fw: "ingress traffic"
+  fw -> port: "filtered & permitted"
+  port -> proc: "handled by"
+}

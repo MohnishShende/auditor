@@ -1,0 +1,70 @@
+direction: right
+
+title: "Auditor Architecture" {
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+CLI: "CLI Layer (serveraudit)" {
+  shape: package
+  style.fill: "#f8fafc"
+  style.stroke: "#64748b"
+
+  audit_cmd: "Audit Orchestrator\n(collect -> normalize -> sanitize)"
+  diff_cmd: "Baseline Diff Engine\n(temporal drift & changes)"
+  render_cmd: "Multi-Format Renderer\n(MD, JSON, HTML, PDF)"
+  web_cmd: "Embedded Web Dashboard\n(Zero-dependency stdlib HTTP)"
+}
+
+Engine: "Audit Execution Core" {
+  shape: package
+  style.fill: "#f1f5f9"
+  style.stroke: "#475569"
+
+  priv: "Privilege Boundary\n(sudo -v once, sudo -n collectors)"
+  exec: "Command Executor\n(strict denylist, timeout, safe PATH)"
+  norm: "Normalizer Engine\n(canonical data structures)"
+  san: "Sanitizer Engine\n(public & private profiles, regex scrubbing)"
+  snap: "Snapshot & Manifest Engine\n(SHA-256 content verification)"
+}
+
+Collectors: "Domain Collectors (43 Modules)" {
+  shape: package
+  style.fill: "#f0fdf4"
+  style.stroke: "#16a34a"
+
+  hw: "Hardware & Platform\n(CPU, RAM, DMI, PCI, USB, Thermal)"
+  storage_col: "Storage & Filesystems\n(Block, LVM, RAID, ZFS, Btrfs, SMART, LUKS)"
+  net: "Network & Security\n(Interfaces, Routes, DNS, Firewall, Fail2ban, SSH)"
+  srv: "Services & Apps\n(systemd, Docker, Caddy, Databases, Media Stacks)"
+}
+
+Analysis: "Analysis & Topology Engine" {
+  shape: package
+  style.fill: "#eff6ff"
+  style.stroke: "#2563eb"
+
+  topo: "Topology Correlator\n(Storage chains, Network-to-Process)"
+  health: "Health Evaluator\n(Status badges, Service states)"
+  sec: "Exposure & Conflict Matrix\n(Open ports, Bound listeners)"
+}
+
+Outputs: "Artifact Generation" {
+  shape: package
+  style.fill: "#faf5ff"
+  style.stroke: "#9333ea"
+
+  md_out: "audit.md\n(GitHub Flavored Markdown)"
+  json_out: "audit.json\n(JSON Schema Validated)"
+  html_out: "audit.html\n(Standalone Responsive Dashboard)"
+  pdf_out: "audit.pdf\n(Executive Print Ready)"
+}
+
+CLI -> Engine: "invokes"
+Engine -> Collectors: "orchestrates"
+Collectors -> Engine: "raw data"
+Engine -> Analysis: "normalized & sanitized state"
+Analysis -> Outputs: "structured topology & findings"
+Outputs -> CLI: "generated artifacts"

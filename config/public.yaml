@@ -1,0 +1,32 @@
+# Linux Server Audit - Public / Shareable Profile
+# Intended for sharing in GitHub issues, forums, and support.
+# Removes secrets AND masks internal IPs, MACs, device serials, and machine identifiers.
+version: "1.0"
+profile: "public"
+
+output:
+  directory: "audits"
+  formats:
+    - "markdown"
+    - "json"
+  generate_checksums: true
+  generate_manifest: true
+
+execution:
+  timeout_seconds: 30
+  parallel_collectors: true
+  allow_sudo: true
+
+network:
+  allow_outbound: false
+
+sanitization:
+  redact_passwords: true
+  redact_tokens: true
+  redact_private_keys: true
+  redact_env_secrets: true
+  mask_ips: true
+  mask_macs: true
+  mask_serials: true
+  mask_uuids: true
+  mask_hostname: true

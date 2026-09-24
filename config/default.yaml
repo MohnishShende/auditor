@@ -1,0 +1,89 @@
+# Linux Server Audit Default Configuration
+version: "1.0"
+
+# Audit Profile (private or public)
+profile: "private"
+
+# Output settings
+output:
+  directory: "audits"
+  formats:
+    - "markdown"
+    - "json"
+  generate_checksums: true
+  generate_manifest: true
+
+# Execution settings
+execution:
+  timeout_seconds: 30
+  parallel_collectors: true
+  max_workers: 4
+  allow_sudo: true
+
+# Network policy (strictly offline by default)
+network:
+  allow_outbound: false
+
+# Collector enablement
+collectors:
+  enabled:
+    - system
+    - hardware
+    - firmware
+    - cpu
+    - memory
+    - pci
+    - usb
+    - storage
+    - smart
+    - filesystems
+    - fstab
+    - lvm
+    - raid
+    - zfs
+    - btrfs
+    - encryption
+    - network
+    - routes
+    - dns
+    - ports
+    - active_net
+    - firewall
+    - fail2ban
+    - ssh
+    - users
+    - security
+    - systemd
+    - processes
+    - runtime_health
+    - packages
+    - docker
+    - containers
+    - images
+    - volumes
+    - networks
+    - compose
+    - container_security
+    - caddy
+    - tls
+    - applications
+    - scheduled
+    - backups
+    - logs
+    - thermal
+    - power
+    - boot
+    - time
+    - sharing
+    - permissions
+  disabled: []
+
+# Sanitization settings
+sanitization:
+  redact_passwords: true
+  redact_tokens: true
+  redact_private_keys: true
+  redact_env_secrets: true
+  mask_ips: false
+  mask_macs: false
+  mask_serials: false

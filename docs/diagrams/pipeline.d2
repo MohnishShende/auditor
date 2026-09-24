@@ -1,0 +1,52 @@
+direction: right
+
+title: "Auditor Execution Pipeline" {
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+step1: "1. OBSERVE" {
+  shape: step
+  style.fill: "#e0f2fe"
+  desc: "Validate host OS & environment\nProbe tool availability\nSingle sudo -v cache initialization"
+}
+
+step2: "2. COLLECT" {
+  shape: step
+  style.fill: "#dcfce7"
+  desc: "Execute 43 domain collectors\nStrict command denylist validation\nNon-interactive sudo -n execution\nZero modifications guarantee"
+}
+
+step3: "3. NORMALIZE" {
+  shape: step
+  style.fill: "#fef3c7"
+  desc: "Parse structured & textual outputs\nCanonical schemas\nGraceful missing-data handling"
+}
+
+step4: "4. SANITIZE" {
+  shape: step
+  style.fill: "#fed7aa"
+  desc: "Redact passwords, tokens, API keys\nScrub password hashes (sha512, argon2)\nMask private IPs (public profile)\nValidate against leakage tests"
+}
+
+step5: "5. ANALYZE" {
+  shape: step
+  style.fill: "#ede9fe"
+  desc: "Reconstruct block-to-mount chains\nCorrelate open ports to processes\nEvaluate health & degradation warnings\nDiff against previous snapshot (drift)"
+}
+
+step6: "6. RENDER" {
+  shape: step
+  style.fill: "#fce7f3"
+  desc: "Generate GitHub-flavored Markdown\nOutput validated JSON schema\nBuild standalone HTML & PDF reports"
+}
+
+step7: "7. PRESERVE" {
+  shape: step
+  style.fill: "#f1f5f9"
+  desc: "Compute SHA-256 integrity checksums\nStore manifest & timestamped snapshot\nZero cloud or external transmissions"
+}
+
+step1 -> step2 -> step3 -> step4 -> step5 -> step6 -> step7

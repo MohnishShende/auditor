@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LinuxServerAuditManifest",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "schema",
+    "profile",
+    "timestamp",
+    "hostname",
+    "collectors",
+    "network_access",
+    "intentional_system_modification"
+  ],
+  "properties": {
+    "tool": { "type": "string" },
+    "version": { "type": "string" },
+    "schema": { "type": "string" },
+    "profile": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "hostname": { "type": "string" },
+    "duration_seconds": { "type": "number" },
+    "operating_user": { "type": "string" },
+    "privileges_available": { "type": "boolean" },
+    "network_access": { "type": "boolean" },
+    "intentional_system_modification": { "type": "boolean" },
+    "collectors": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "errors": {
+      "type": "object"
+    }
+  }
+}
