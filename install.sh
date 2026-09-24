@@ -8,7 +8,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks to find the real repository directory
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 cd "$SCRIPT_DIR"
 
 GREEN='\033[0;32m'
@@ -36,7 +43,7 @@ echo -e "Detected OS: ${BOLD}${OS_NAME}${NC}"
 
 # 2. Check Python 3 Availability (Python 3.10+)
 PYTHON_BIN=""
-for cand in python3 python python3.12 python3.11 python3.10; do
+for cand in python3 python python3.14 python3.13 python3.12 python3.11 python3.10; do
     if command -v "$cand" >/dev/null 2>&1; then
         PY_VER=$("$cand" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
         PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
@@ -101,14 +108,23 @@ echo "Installing/updating dependencies in virtual environment..."
 mkdir -p "${SCRIPT_DIR}/bin"
 WRAPPER="${SCRIPT_DIR}/bin/serveraudit"
 
-cat <<EOF > "$WRAPPER"
+cat <<'EOF' > "$WRAPPER"
 #!/usr/bin/env bash
-SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="\${SCRIPT_DIR}/src:\${PYTHONPATH:-}"
-if [ -f "\${SCRIPT_DIR}/.venv/bin/python" ]; then
-    exec "\${SCRIPT_DIR}/.venv/bin/python" -m serveraudit.cli.main "\$@"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+export PYTHONPATH="${SCRIPT_DIR}/src:${PYTHONPATH:-}"
+
+if [ -f "${SCRIPT_DIR}/.venv/bin/python" ]; then
+    exec "${SCRIPT_DIR}/.venv/bin/python" -m serveraudit.cli.main "$@"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 -m serveraudit.cli.main "$@"
 else
-    exec python3 -m serveraudit.cli.main "\$@"
+    exec python -m serveraudit.cli.main "$@"
 fi
 EOF
 

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-24
+
+### Fixed
+- **CLI Wrapper Symlink Resolution (Bug 1)**: Resolved symlink traversal in `install.sh`, `audit.sh`, and `bin/serveraudit` so invocation via `~/.local/bin/serveraudit` or any external symlink correctly resolves the project root and virtual environment without `ModuleNotFoundError`.
+- **CPU Collector Parsing Resilience (Bug 2)**: Fixed `KeyError: 'model_name'` caused by key mismatch when parsing `/proc/cpuinfo`. Added cross-architecture fallbacks (ARM, x86, RISC-V), `lscpu -J` integration, and tolerant error handling returning `PARTIAL` rather than crashing on missing optional metadata.
+- **Docker Detection & Error Differentiation (Bug 3)**: Resolved Docker false-negative where operational daemons were marked `SKIPPED`. Added multi-tier detection supporting contemporary Docker Engine 29.x / API 1.56, unprivileged execution with automatic privilege elevation retry, and explicit status differentiation between missing CLI, stopped daemon, permission denied, and active engine.
+- **Runpy CLI Module Import Warning (Bug 4)**: Resolved `RuntimeWarning: 'serveraudit.cli.main' found in sys.modules` by implementing lazy attribute loading in `serveraudit.cli.__init__`.
+
 ## [0.1.0] - 2026-09-24
 
 ### Added

@@ -2,6 +2,11 @@
 CLI orchestration package for Linux Server Audit.
 """
 
-from .main import main
-
 __all__ = ["main"]
+
+
+def __getattr__(name: str):
+    if name == "main":
+        from .main import main
+        return main
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

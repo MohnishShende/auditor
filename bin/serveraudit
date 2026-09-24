@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+export PYTHONPATH="${SCRIPT_DIR}/src:${PYTHONPATH:-}"
+
+if [ -f "${SCRIPT_DIR}/.venv/bin/python" ]; then
+    exec "${SCRIPT_DIR}/.venv/bin/python" -m serveraudit.cli.main "$@"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 -m serveraudit.cli.main "$@"
+else
+    exec python -m serveraudit.cli.main "$@"
+fi

@@ -7,10 +7,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
-from ..core.executor import CommandExecutor
+from ..core.executor import CommandExecutor, CommandOutput
 from ..core.normalizer import Normalizer
 from . import register_collector
 
@@ -29,12 +29,25 @@ class DockerCollector(BaseCollector):
         outputs=["engine", "containers", "images", "volumes", "networks", "compose", "security"],
     )
 
+    def _exec_docker(self, executor: CommandExecutor, args: List[str], use_sudo_pref: bool = False) -> CommandOutput:
+        """Executes docker command trying unprivileged first unless sudo preferred."""
+        cmd = ["docker"] + args
+        if use_sudo_pref and executor.privileges.can_elevate:
+            return executor.run(cmd, use_sudo=True)
+
+        res = executor.run(cmd, use_sudo=False)
+        # If unprivileged failed with permission denied, retry with sudo if available
+        if not res.success and ("permission denied" in res.stderr.lower() or "got permission denied" in res.stderr.lower()):
+            if executor.privileges.can_elevate:
+                return executor.run(cmd, use_sudo=True)
+        return res
+
     def collect(self, executor: CommandExecutor, context: Dict[str, Any]) -> CollectorResult:
         if not executor.which("docker"):
             return CollectorResult(
                 collector=self.name,
                 status=CollectorStatus.SKIPPED,
-                message="docker binary not installed",
+                message="Docker CLI binary not found in PATH",
             )
 
         data: Dict[str, Any] = {
@@ -42,6 +55,7 @@ class DockerCollector(BaseCollector):
                 "installed": True,
                 "active": False,
                 "server_version": None,
+                "api_version": None,
                 "storage_driver": None,
                 "cgroup_driver": None,
                 "cgroup_version": None,
@@ -59,39 +73,102 @@ class DockerCollector(BaseCollector):
             "security_findings": [],
         }
 
-        # 1. Docker Info
-        info_res = executor.run(["docker", "info", "--format", "{{json .}}"], use_sudo=True)
-        if not info_res.success:
-            return CollectorResult(
-                collector=self.name,
-                status=CollectorStatus.SKIPPED,
-                data=data,
-                message="Docker daemon is not running or inaccessible",
-            )
+        # 1. Test Connectivity / Accessibility via docker version or docker info
+        use_sudo = False
+        test_res = executor.run(["docker", "version", "--format", "{{json .}}"], use_sudo=False)
+        
+        # Check if unprivileged failed due to permission denied
+        if not test_res.success:
+            stderr_lower = (test_res.stderr or "").lower()
+            if "permission denied" in stderr_lower or "got permission denied" in stderr_lower:
+                if executor.privileges.can_elevate:
+                    test_res = executor.run(["docker", "version", "--format", "{{json .}}"], use_sudo=True)
+                    if test_res.success:
+                        use_sudo = True
+                else:
+                    return CollectorResult(
+                        collector=self.name,
+                        status=CollectorStatus.PERMISSION_DENIED,
+                        data=data,
+                        message="Permission denied connecting to Docker socket /var/run/docker.sock",
+                    )
+            elif "cannot connect to the docker daemon" in stderr_lower or "is the docker daemon running" in stderr_lower:
+                return CollectorResult(
+                    collector=self.name,
+                    status=CollectorStatus.SKIPPED,
+                    data=data,
+                    message="Docker daemon is not running (socket unreachable)",
+                )
 
-        try:
-            info_json = json.loads(info_res.stdout)
-            eng = data["engine"]
-            eng["active"] = True
-            eng["server_version"] = info_json.get("ServerVersion")
-            eng["storage_driver"] = info_json.get("Driver")
-            eng["cgroup_driver"] = info_json.get("CgroupDriver")
-            eng["cgroup_version"] = info_json.get("CgroupVersion")
-            eng["docker_root_dir"] = info_json.get("DockerRootDir")
-            eng["containers_total"] = info_json.get("Containers", 0)
-            eng["containers_running"] = info_json.get("ContainersRunning", 0)
-            eng["containers_stopped"] = info_json.get("ContainersStopped", 0)
-            eng["images_total"] = info_json.get("Images", 0)
-        except Exception:
-            pass
+        # Parse docker version if available
+        eng = data["engine"]
+        if test_res.success and test_res.stdout:
+            try:
+                ver_json = json.loads(test_res.stdout)
+                server_obj = ver_json.get("Server", {})
+                if isinstance(server_obj, dict):
+                    eng["active"] = True
+                    eng["server_version"] = server_obj.get("Version")
+                    eng["api_version"] = server_obj.get("ApiVersion")
+            except Exception:
+                # Text fallback
+                eng["active"] = True
 
-        # 2. Inspect all containers
-        ps_res = executor.run(["docker", "ps", "-a", "--format", "{{.ID}}"], use_sudo=True)
+        # If docker version format failed, try plain docker version
+        if not eng["active"]:
+            plain_ver = self._exec_docker(executor, ["version"], use_sudo_pref=use_sudo)
+            if plain_ver.success:
+                eng["active"] = True
+                for line in plain_ver.stdout.splitlines():
+                    if "Version:" in line and not eng["server_version"]:
+                        eng["server_version"] = line.split(":", 1)[1].strip()
+                    elif "API version:" in line and not eng["api_version"]:
+                        eng["api_version"] = line.split(":", 1)[1].strip()
+
+        # 2. Docker Info
+        info_res = self._exec_docker(executor, ["info", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
+        if info_res.success and info_res.stdout:
+            try:
+                info_json = json.loads(info_res.stdout)
+                eng["active"] = True
+                if not eng["server_version"]:
+                    eng["server_version"] = info_json.get("ServerVersion")
+                eng["storage_driver"] = info_json.get("Driver")
+                eng["cgroup_driver"] = info_json.get("CgroupDriver")
+                eng["cgroup_version"] = info_json.get("CgroupVersion")
+                eng["docker_root_dir"] = info_json.get("DockerRootDir")
+                eng["containers_total"] = info_json.get("Containers", 0)
+                eng["containers_running"] = info_json.get("ContainersRunning", 0)
+                eng["containers_stopped"] = info_json.get("ContainersStopped", 0)
+                eng["images_total"] = info_json.get("Images", 0)
+            except Exception:
+                pass
+        elif not eng["active"]:
+            # Check stderr of info
+            stderr_lower = (info_res.stderr or "").lower()
+            if "permission denied" in stderr_lower:
+                return CollectorResult(
+                    collector=self.name,
+                    status=CollectorStatus.PERMISSION_DENIED,
+                    data=data,
+                    message="Permission denied accessing Docker daemon",
+                )
+            if "cannot connect" in stderr_lower or "is the docker daemon running" in stderr_lower:
+                return CollectorResult(
+                    collector=self.name,
+                    status=CollectorStatus.SKIPPED,
+                    data=data,
+                    message="Docker daemon is not running (socket unreachable)",
+                )
+
+        # 3. Inspect all containers via docker ps -a
+        ps_res = self._exec_docker(executor, ["ps", "-a", "--format", "{{.ID}}"], use_sudo_pref=use_sudo)
         if ps_res.success and ps_res.stdout.strip():
             container_ids = ps_res.stdout.strip().split()
             if container_ids:
+                eng["active"] = True
                 # Inspect in batches
-                inspect_res = executor.run(["docker", "inspect"] + container_ids, use_sudo=True)
+                inspect_res = self._exec_docker(executor, ["inspect"] + container_ids, use_sudo_pref=use_sudo)
                 if inspect_res.success and inspect_res.stdout:
                     try:
                         inspect_list = json.loads(inspect_res.stdout)
@@ -101,7 +178,7 @@ class DockerCollector(BaseCollector):
                             state_obj = c.get("State", {})
                             c_state = state_obj.get("Status", "unknown")
                             image_name = c.get("Config", {}).get("Image", "")
-                            
+
                             # Parse mounts
                             mounts = []
                             has_docker_sock = False
@@ -142,11 +219,9 @@ class DockerCollector(BaseCollector):
                             host_config = c.get("HostConfig", {})
                             is_privileged = host_config.get("Privileged", False)
                             net_mode = host_config.get("NetworkMode", "")
-                            cap_add = host_config.get("CapAdd", []) or []
                             user = c.get("Config", {}).get("User", "")
-                            is_root = user == "" or user == "0" or user == "root"
 
-                            # Environment variable names ONLY (prevent secret value leakage)
+                            # Environment variable names ONLY
                             env_names = []
                             for env_line in c.get("Config", {}).get("Env", []):
                                 if "=" in env_line:
@@ -191,12 +266,11 @@ class DockerCollector(BaseCollector):
                                     "severity": "WARNING",
                                     "finding": "Docker socket /var/run/docker.sock mounted into container",
                                 })
-
                     except Exception:
                         pass
 
-        # 3. Docker Images
-        img_res = executor.run(["docker", "images", "--format", "{{json .}}"], use_sudo=True)
+        # 4. Docker Images
+        img_res = self._exec_docker(executor, ["images", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
         if img_res.success and img_res.stdout:
             for line in img_res.stdout.splitlines():
                 try:
@@ -211,8 +285,8 @@ class DockerCollector(BaseCollector):
                 except Exception:
                     pass
 
-        # 4. Docker Volumes
-        vol_res = executor.run(["docker", "volume", "ls", "--format", "{{json .}}"], use_sudo=True)
+        # 5. Docker Volumes
+        vol_res = self._exec_docker(executor, ["volume", "ls", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
         if vol_res.success and vol_res.stdout:
             for line in vol_res.stdout.splitlines():
                 try:
@@ -225,8 +299,8 @@ class DockerCollector(BaseCollector):
                 except Exception:
                     pass
 
-        # 5. Docker Networks
-        net_res = executor.run(["docker", "network", "ls", "--format", "{{json .}}"], use_sudo=True)
+        # 6. Docker Networks
+        net_res = self._exec_docker(executor, ["network", "ls", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
         if net_res.success and net_res.stdout:
             for line in net_res.stdout.splitlines():
                 try:
@@ -240,24 +314,38 @@ class DockerCollector(BaseCollector):
                 except Exception:
                     pass
 
-        # 6. Docker Compose discovery
-        if executor.which("docker"):
-            comp_res = executor.run(["docker", "compose", "ls", "--format", "json"], use_sudo=True)
-            if comp_res.success and comp_res.stdout:
-                try:
-                    comp_json = json.loads(comp_res.stdout)
-                    for cp in comp_json:
-                        data["compose_projects"].append({
-                            "name": cp.get("Name"),
-                            "status": cp.get("Status"),
-                            "config_files": cp.get("ConfigFiles", "").split(",") if cp.get("ConfigFiles") else [],
-                        })
-                except Exception:
-                    pass
+        # 7. Docker Compose discovery
+        comp_res = self._exec_docker(executor, ["compose", "ls", "--format", "json"], use_sudo_pref=use_sudo)
+        if comp_res.success and comp_res.stdout:
+            try:
+                comp_json = json.loads(comp_res.stdout)
+                for cp in comp_json:
+                    data["compose_projects"].append({
+                        "name": cp.get("Name"),
+                        "status": cp.get("Status"),
+                        "config_files": cp.get("ConfigFiles", "").split(",") if cp.get("ConfigFiles") else [],
+                    })
+            except Exception:
+                pass
+
+        # Update totals if info was incomplete
+        if not eng["containers_total"] and data["containers"]:
+            eng["containers_total"] = len(data["containers"])
+            eng["containers_running"] = sum(1 for c in data["containers"] if c.get("state") == "running")
+            eng["containers_stopped"] = eng["containers_total"] - eng["containers_running"]
+        if not eng["images_total"] and data["images"]:
+            eng["images_total"] = len(data["images"])
+
+        if eng["active"] or data["containers"]:
+            status = CollectorStatus.SUCCESS
+            msg = f"Discovered {len(data['containers'])} containers, {len(data['images'])} images, and {len(data['volumes'])} volumes"
+        else:
+            status = CollectorStatus.PARTIAL
+            msg = "Docker CLI present but engine details partially accessible"
 
         return CollectorResult(
             collector=self.name,
-            status=CollectorStatus.SUCCESS,
+            status=status,
             data=data,
-            message=f"Discovered {len(data['containers'])} containers, {len(data['images'])} images, and {len(data['volumes'])} volumes",
+            message=msg,
         )
