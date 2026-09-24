@@ -15,6 +15,70 @@ from ..core.normalizer import Normalizer
 from . import register_collector
 
 
+def parse_docker_labels(labels_val: Any) -> Dict[str, str]:
+    """Parses Docker labels whether formatted as comma-separated string or dict."""
+    if isinstance(labels_val, dict):
+        return labels_val
+    if not isinstance(labels_val, str) or not labels_val.strip():
+        return {}
+
+    labels: Dict[str, str] = {}
+    for item in labels_val.split(","):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            labels[k.strip()] = v.strip()
+    return labels
+
+
+def parse_docker_ports(ports_val: Any) -> List[Dict[str, Any]]:
+    """Parses Docker ports whether formatted as a string or inspect dict."""
+    if isinstance(ports_val, list):
+        return ports_val
+    if not isinstance(ports_val, str) or not ports_val.strip():
+        return []
+
+    port_bindings: List[Dict[str, Any]] = []
+    for item in [p.strip() for p in ports_val.split(",") if p.strip()]:
+        if "->" in item:
+            host_part, cont_part = item.split("->", 1)
+            host_ip = None
+            host_port = None
+            if ":" in host_part:
+                host_ip, host_port = host_part.rsplit(":", 1)
+            else:
+                host_port = host_part
+            port_bindings.append({
+                "container_port": cont_part.strip(),
+                "host_ip": host_ip.strip() if host_ip else None,
+                "host_port": host_port.strip() if host_port else None,
+            })
+        else:
+            port_bindings.append({
+                "container_port": item.strip(),
+                "host_ip": None,
+                "host_port": None,
+            })
+    return port_bindings
+
+
+def parse_docker_mounts(mounts_val: Any) -> List[Dict[str, Any]]:
+    """Parses Docker mounts whether formatted as string or inspect list."""
+    if isinstance(mounts_val, list):
+        return mounts_val
+    if not isinstance(mounts_val, str) or not mounts_val.strip():
+        return []
+
+    mount_list: List[Dict[str, Any]] = []
+    for m in [x.strip() for x in mounts_val.split(",") if x.strip()]:
+        mount_list.append({
+            "type": "bind" if m.startswith("/") else "volume",
+            "source": m,
+            "destination": m,
+            "read_write": True,
+        })
+    return mount_list
+
+
 @register_collector
 class DockerCollector(BaseCollector):
     manifest = CollectorManifest(
@@ -73,11 +137,11 @@ class DockerCollector(BaseCollector):
             "security_findings": [],
         }
 
-        # 1. Test Connectivity / Accessibility via docker version or docker info
         use_sudo = False
+
+        # 1. Test Connectivity / Accessibility via docker version
         test_res = executor.run(["docker", "version", "--format", "{{json .}}"], use_sudo=False)
         
-        # Check if unprivileged failed due to permission denied
         if not test_res.success:
             stderr_lower = (test_res.stderr or "").lower()
             if "permission denied" in stderr_lower or "got permission denied" in stderr_lower:
@@ -100,7 +164,6 @@ class DockerCollector(BaseCollector):
                     message="Docker daemon is not running (socket unreachable)",
                 )
 
-        # Parse docker version if available
         eng = data["engine"]
         if test_res.success and test_res.stdout:
             try:
@@ -111,10 +174,9 @@ class DockerCollector(BaseCollector):
                     eng["server_version"] = server_obj.get("Version")
                     eng["api_version"] = server_obj.get("ApiVersion")
             except Exception:
-                # Text fallback
                 eng["active"] = True
 
-        # If docker version format failed, try plain docker version
+        # Fallback plain version parsing if needed
         if not eng["active"]:
             plain_ver = self._exec_docker(executor, ["version"], use_sudo_pref=use_sudo)
             if plain_ver.success:
@@ -144,7 +206,6 @@ class DockerCollector(BaseCollector):
             except Exception:
                 pass
         elif not eng["active"]:
-            # Check stderr of info
             stderr_lower = (info_res.stderr or "").lower()
             if "permission denied" in stderr_lower:
                 return CollectorResult(
@@ -161,80 +222,146 @@ class DockerCollector(BaseCollector):
                     message="Docker daemon is not running (socket unreachable)",
                 )
 
-        # 3. Inspect all containers via docker ps -a
-        ps_res = self._exec_docker(executor, ["ps", "-a", "--format", "{{.ID}}"], use_sudo_pref=use_sudo)
-        if ps_res.success and ps_res.stdout.strip():
-            container_ids = ps_res.stdout.strip().split()
-            if container_ids:
-                eng["active"] = True
-                # Inspect in batches
-                inspect_res = self._exec_docker(executor, ["inspect"] + container_ids, use_sudo_pref=use_sudo)
-                if inspect_res.success and inspect_res.stdout:
-                    try:
-                        inspect_list = json.loads(inspect_res.stdout)
-                        for c in inspect_list:
-                            c_id = c.get("Id", "")[:12]
-                            c_name = c.get("Name", "").lstrip("/")
-                            state_obj = c.get("State", {})
-                            c_state = state_obj.get("Status", "unknown")
-                            image_name = c.get("Config", {}).get("Image", "")
+        # 3. Primary Container Discovery via docker ps -a --format '{{json .}}' (NDJSON)
+        containers_by_id: Dict[str, Dict[str, Any]] = {}
+        ps_json_res = self._exec_docker(executor, ["ps", "-a", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
+        if ps_json_res.success and ps_json_res.stdout.strip():
+            eng["active"] = True
+            for line in ps_json_res.stdout.splitlines():
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                try:
+                    c_obj = json.loads(line_str)
+                    c_id = str(c_obj.get("ID", ""))[:12]
+                    c_name = str(c_obj.get("Names", "")).lstrip("/")
+                    c_state = str(c_obj.get("State", "unknown")).lower()
+                    c_status = str(c_obj.get("Status", ""))
+                    c_image = str(c_obj.get("Image", ""))
+                    labels_dict = parse_docker_labels(c_obj.get("Labels"))
+                    ports_list = parse_docker_ports(c_obj.get("Ports"))
+                    mounts_list = parse_docker_mounts(c_obj.get("Mounts"))
+                    networks_str = str(c_obj.get("Networks", ""))
+                    networks_list = [n.strip() for n in networks_str.split(",") if n.strip()]
 
-                            # Parse mounts
-                            mounts = []
-                            has_docker_sock = False
-                            for m in c.get("Mounts", []):
-                                m_type = m.get("Type")
-                                m_src = m.get("Source")
-                                m_dst = m.get("Destination")
-                                m_rw = m.get("RW", True)
-                                mounts.append({
-                                    "type": m_type,
-                                    "source": m_src,
-                                    "destination": m_dst,
-                                    "read_write": m_rw,
-                                })
-                                if m_src == "/var/run/docker.sock":
-                                    has_docker_sock = True
+                    compose_project = (
+                        labels_dict.get("com.docker.compose.project")
+                        or labels_dict.get("io.kompose.service")
+                    )
+                    compose_service = labels_dict.get("com.docker.compose.service")
 
-                            # Parse ports
-                            port_bindings = []
-                            network_settings = c.get("NetworkSettings", {})
-                            ports = network_settings.get("Ports", {}) or {}
-                            for container_port, host_bindings in ports.items():
-                                if host_bindings:
-                                    for hb in host_bindings:
-                                        port_bindings.append({
-                                            "container_port": container_port,
-                                            "host_ip": hb.get("HostIp"),
-                                            "host_port": hb.get("HostPort"),
-                                        })
-                                else:
+                    entry = {
+                        "id": c_id,
+                        "name": c_name,
+                        "state": c_state,
+                        "status": c_status,
+                        "image": c_image,
+                        "privileged": False,
+                        "host_network": "host" in networks_list,
+                        "mounts": mounts_list,
+                        "ports": ports_list,
+                        "compose_project": compose_project,
+                        "compose_service": compose_service,
+                        "environment_keys": [],
+                        "labels": labels_dict,
+                        "networks": networks_list,
+                    }
+                    containers_by_id[c_id] = entry
+                except Exception:
+                    pass
+
+        # 4. Secondary Container Enrichment via docker inspect (if IDs available)
+        container_ids = list(containers_by_id.keys())
+        if not container_ids:
+            # Fallback to plain ID listing if ps json was empty
+            ps_ids_res = self._exec_docker(executor, ["ps", "-a", "--format", "{{.ID}}"], use_sudo_pref=use_sudo)
+            if ps_ids_res.success and ps_ids_res.stdout.strip():
+                container_ids = ps_ids_res.stdout.strip().split()
+
+        if container_ids:
+            eng["active"] = True
+            inspect_res = self._exec_docker(executor, ["inspect"] + container_ids, use_sudo_pref=use_sudo)
+            if inspect_res.success and inspect_res.stdout:
+                try:
+                    inspect_list = json.loads(inspect_res.stdout)
+                    for c in inspect_list:
+                        c_id = c.get("Id", "")[:12]
+                        c_name = c.get("Name", "").lstrip("/")
+                        state_obj = c.get("State", {})
+                        c_state = state_obj.get("Status", "unknown")
+                        image_name = c.get("Config", {}).get("Image", "")
+
+                        # Detailed mounts
+                        mounts = []
+                        has_docker_sock = False
+                        for m in c.get("Mounts", []):
+                            m_type = m.get("Type")
+                            m_src = m.get("Source")
+                            m_dst = m.get("Destination")
+                            m_rw = m.get("RW", True)
+                            mounts.append({
+                                "type": m_type,
+                                "source": m_src,
+                                "destination": m_dst,
+                                "read_write": m_rw,
+                            })
+                            if m_src == "/var/run/docker.sock":
+                                has_docker_sock = True
+
+                        # Detailed ports
+                        port_bindings = []
+                        network_settings = c.get("NetworkSettings", {})
+                        ports = network_settings.get("Ports", {}) or {}
+                        for container_port, host_bindings in ports.items():
+                            if host_bindings:
+                                for hb in host_bindings:
                                     port_bindings.append({
                                         "container_port": container_port,
-                                        "host_ip": None,
-                                        "host_port": None,
+                                        "host_ip": hb.get("HostIp"),
+                                        "host_port": hb.get("HostPort"),
                                     })
+                            else:
+                                port_bindings.append({
+                                    "container_port": container_port,
+                                    "host_ip": None,
+                                    "host_port": None,
+                                })
 
-                            # Security posture
-                            host_config = c.get("HostConfig", {})
-                            is_privileged = host_config.get("Privileged", False)
-                            net_mode = host_config.get("NetworkMode", "")
-                            user = c.get("Config", {}).get("User", "")
+                        host_config = c.get("HostConfig", {})
+                        is_privileged = host_config.get("Privileged", False)
+                        net_mode = host_config.get("NetworkMode", "")
 
-                            # Environment variable names ONLY
-                            env_names = []
-                            for env_line in c.get("Config", {}).get("Env", []):
-                                if "=" in env_line:
-                                    env_names.append(env_line.split("=", 1)[0])
+                        # Environment variable names ONLY
+                        env_names = []
+                        for env_line in c.get("Config", {}).get("Env", []):
+                            if "=" in env_line:
+                                env_names.append(env_line.split("=", 1)[0])
 
-                            labels = c.get("Config", {}).get("Labels", {}) or {}
-                            compose_project = labels.get("com.docker.compose.project")
-                            compose_service = labels.get("com.docker.compose.service")
+                        labels = c.get("Config", {}).get("Labels", {}) or {}
+                        compose_project = labels.get("com.docker.compose.project")
+                        compose_service = labels.get("com.docker.compose.service")
 
-                            container_entry = {
+                        if c_id in containers_by_id:
+                            entry = containers_by_id[c_id]
+                            entry["privileged"] = is_privileged
+                            entry["host_network"] = net_mode == "host"
+                            if mounts:
+                                entry["mounts"] = mounts
+                            if port_bindings:
+                                entry["ports"] = port_bindings
+                            entry["environment_keys"] = env_names
+                            if compose_project:
+                                entry["compose_project"] = compose_project
+                            if compose_service:
+                                entry["compose_service"] = compose_service
+                            if labels:
+                                entry["labels"].update(labels)
+                        else:
+                            containers_by_id[c_id] = {
                                 "id": c_id,
                                 "name": c_name,
                                 "state": c_state,
+                                "status": c_state,
                                 "image": image_name,
                                 "privileged": is_privileged,
                                 "host_network": net_mode == "host",
@@ -244,35 +371,39 @@ class DockerCollector(BaseCollector):
                                 "compose_service": compose_service,
                                 "environment_keys": env_names,
                                 "labels": labels,
+                                "networks": [net_mode] if net_mode else [],
                             }
-                            data["containers"].append(container_entry)
 
-                            # Record security observations
-                            if is_privileged:
-                                data["security_findings"].append({
-                                    "container": c_name,
-                                    "severity": "WARNING",
-                                    "finding": "Container executes in privileged mode",
-                                })
-                            if net_mode == "host":
-                                data["security_findings"].append({
-                                    "container": c_name,
-                                    "severity": "NOTICE",
-                                    "finding": "Container uses host network namespace",
-                                })
-                            if has_docker_sock:
-                                data["security_findings"].append({
-                                    "container": c_name,
-                                    "severity": "WARNING",
-                                    "finding": "Docker socket /var/run/docker.sock mounted into container",
-                                })
-                    except Exception:
-                        pass
+                        # Security findings
+                        if is_privileged:
+                            data["security_findings"].append({
+                                "container": c_name,
+                                "severity": "WARNING",
+                                "finding": "Container executes in privileged mode",
+                            })
+                        if net_mode == "host":
+                            data["security_findings"].append({
+                                "container": c_name,
+                                "severity": "NOTICE",
+                                "finding": "Container uses host network namespace",
+                            })
+                        if has_docker_sock:
+                            data["security_findings"].append({
+                                "container": c_name,
+                                "severity": "WARNING",
+                                "finding": "Docker socket /var/run/docker.sock mounted into container",
+                            })
+                except Exception:
+                    pass
 
-        # 4. Docker Images
+        data["containers"] = list(containers_by_id.values())
+
+        # 5. Docker Images
         img_res = self._exec_docker(executor, ["images", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
         if img_res.success and img_res.stdout:
             for line in img_res.stdout.splitlines():
+                if not line.strip():
+                    continue
                 try:
                     img_obj = json.loads(line)
                     data["images"].append({
@@ -285,10 +416,12 @@ class DockerCollector(BaseCollector):
                 except Exception:
                     pass
 
-        # 5. Docker Volumes
+        # 6. Docker Volumes
         vol_res = self._exec_docker(executor, ["volume", "ls", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
         if vol_res.success and vol_res.stdout:
             for line in vol_res.stdout.splitlines():
+                if not line.strip():
+                    continue
                 try:
                     vol_obj = json.loads(line)
                     data["volumes"].append({
@@ -299,10 +432,12 @@ class DockerCollector(BaseCollector):
                 except Exception:
                     pass
 
-        # 6. Docker Networks
+        # 7. Docker Networks
         net_res = self._exec_docker(executor, ["network", "ls", "--format", "{{json .}}"], use_sudo_pref=use_sudo)
         if net_res.success and net_res.stdout:
             for line in net_res.stdout.splitlines():
+                if not line.strip():
+                    continue
                 try:
                     net_obj = json.loads(line)
                     data["networks"].append({
@@ -314,7 +449,7 @@ class DockerCollector(BaseCollector):
                 except Exception:
                     pass
 
-        # 7. Docker Compose discovery
+        # 8. Docker Compose Projects
         comp_res = self._exec_docker(executor, ["compose", "ls", "--format", "json"], use_sudo_pref=use_sudo)
         if comp_res.success and comp_res.stdout:
             try:
@@ -328,13 +463,11 @@ class DockerCollector(BaseCollector):
             except Exception:
                 pass
 
-        # Update totals if info was incomplete
-        if not eng["containers_total"] and data["containers"]:
-            eng["containers_total"] = len(data["containers"])
-            eng["containers_running"] = sum(1 for c in data["containers"] if c.get("state") == "running")
-            eng["containers_stopped"] = eng["containers_total"] - eng["containers_running"]
-        if not eng["images_total"] and data["images"]:
-            eng["images_total"] = len(data["images"])
+        # Update totals
+        eng["containers_total"] = len(data["containers"])
+        eng["containers_running"] = sum(1 for c in data["containers"] if c.get("state") == "running")
+        eng["containers_stopped"] = eng["containers_total"] - eng["containers_running"]
+        eng["images_total"] = len(data["images"])
 
         if eng["active"] or data["containers"]:
             status = CollectorStatus.SUCCESS

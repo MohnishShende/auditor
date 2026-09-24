@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
@@ -15,20 +16,28 @@ from typing import List, Optional, Tuple
 from .privileges import PrivilegeManager
 
 
-# Strict safety denylist of commands or subcommands that modify state
-FORBIDDEN_COMMANDS = {
+# Strict safety denylist of standalone binaries that modify state
+FORBIDDEN_BINARIES = {
     "rm", "rmdir", "mkfs", "mke2fs", "mkfs.ext4", "mkfs.xfs", "mkfs.btrfs",
     "dd", "fdisk", "parted", "gdisk", "wipefs", "shred",
     "reboot", "poweroff", "shutdown", "halt", "init",
     "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
     "passwd", "chpasswd", "chage",
     "chmod", "chown", "chgrp",
-    "apt-get install", "apt install", "apt remove", "apt-get remove", "apt purge", "dpkg -i", "dpkg -r",
-    "systemctl start", "systemctl stop", "systemctl restart", "systemctl enable", "systemctl disable", "systemctl mask",
-    "docker run", "docker stop", "docker restart", "docker rm", "docker rmi", "docker system prune",
-    "mount", "umount", "cryptsetup open", "cryptsetup close", "cryptsetup luksFormat",
-    "iptables -A", "iptables -D", "iptables -F", "nft add", "nft delete", "ufw enable", "ufw disable", "ufw allow", "ufw deny",
+    "mount", "umount",
 }
+
+# Strict safety denylist of command patterns that modify state
+FORBIDDEN_PATTERNS = [
+    r"\bapt(-get)?\s+(install|remove|purge|autoremove)\b",
+    r"\bdpkg\s+-(i|r|P|--install|--remove|--purge)\b",
+    r"\bsystemctl\s+(start|stop|restart|reload|enable|disable|mask|unmask)\b",
+    r"\bdocker\s+(run|stop|restart|rm|rmi|kill|pause|unpause|system\s+prune|volume\s+rm|network\s+rm)\b",
+    r"\bcryptsetup\s+(open|close|luksFormat|luksOpen|luksClose)\b",
+    r"\biptables\s+-[ADIFNX]\b",
+    r"\bnft\s+(add|delete|flush|insert)\b",
+    r"\bufw\s+(enable|disable|allow|deny|delete|insert|reload|reset)\b",
+]
 
 
 @dataclass
@@ -73,12 +82,12 @@ class CommandExecutor:
         cmd_str = " ".join(cmd).strip()
         binary = Path(cmd[0]).name
 
-        if binary in FORBIDDEN_COMMANDS:
+        if binary in FORBIDDEN_BINARIES:
             return False, f"Forbidden state-modifying binary: '{binary}'"
 
-        for forbidden in FORBIDDEN_COMMANDS:
-            if forbidden in cmd_str:
-                return False, f"Forbidden state-modifying command pattern: '{forbidden}'"
+        for pattern in FORBIDDEN_PATTERNS:
+            if re.search(pattern, cmd_str, re.IGNORECASE):
+                return False, f"Forbidden state-modifying command pattern: '{pattern}'"
 
         return True, None
 
@@ -165,19 +174,7 @@ class CommandExecutor:
                 duration_seconds=duration,
                 success=False,
                 used_sudo=actual_sudo_used,
-                error_message=f"Timeout ({timeout}s)",
-            )
-        except FileNotFoundError as e:
-            duration = time.time() - start_time
-            return CommandOutput(
-                command=final_cmd,
-                stdout="",
-                stderr=f"Binary not found: {e.filename or final_cmd[0]}",
-                returncode=127,
-                duration_seconds=duration,
-                success=False,
-                used_sudo=actual_sudo_used,
-                error_message="Command not found",
+                error_message="Timeout",
             )
         except Exception as e:
             duration = time.time() - start_time
@@ -192,23 +189,26 @@ class CommandExecutor:
                 error_message=str(e),
             )
 
-    def read_file(self, filepath: str | Path, use_sudo: bool = False, max_bytes: int = 5_000_000) -> Optional[str]:
-        """Safely read a file without modifying atime if possible."""
-        p = Path(filepath)
-        if not p.exists() and not use_sudo:
-            return None
+    def read_file(
+        self,
+        path: Path | str,
+        use_sudo: bool = False,
+        max_bytes: int = 10 * 1024 * 1024,
+    ) -> Optional[str]:
+        """Reads file contents safely without modification."""
+        p = Path(path)
+        if not use_sudo:
+            try:
+                if p.is_file():
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        return f.read(max_bytes)
+            except (PermissionError, FileNotFoundError, OSError):
+                pass
 
-        if use_sudo and not self.privileges.is_root:
-            res = self.run(["cat", str(p)], use_sudo=True)
-            return res.stdout if res.success else None
+        # If unprivileged read failed or sudo requested
+        if use_sudo and self.privileges.can_elevate:
+            cat_out = self.run(["cat", str(p)], use_sudo=True)
+            if cat_out.success:
+                return cat_out.stdout[:max_bytes]
 
-        try:
-            with open(p, "r", encoding="utf-8", errors="replace") as f:
-                return f.read(max_bytes)
-        except PermissionError:
-            if self.privileges.can_elevate:
-                res = self.run(["cat", str(p)], use_sudo=True)
-                return res.stdout if res.success else None
-            return None
-        except Exception:
-            return None
+        return None
