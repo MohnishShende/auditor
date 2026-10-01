@@ -33,8 +33,11 @@
         "timestamp": { "type": "string" },
         "hostname": { "type": "string" },
         "profile": { "type": "string" },
+        "audit_mode": { "type": "string", "enum": ["user", "sudo"] },
         "duration_seconds": { "type": "number" },
         "privileges_available": { "type": "boolean" },
+        "effective_uid": { "type": "integer" },
+        "effective_user": { "type": "string" },
         "operating_user": { "type": "string" }
       }
     },
@@ -67,7 +70,8 @@
           },
           "duration_seconds": { "type": "number" },
           "error": { "type": ["string", "null"] },
-          "message": { "type": ["string", "null"] }
+          "message": { "type": ["string", "null"] },
+          "skip_reason": { "type": ["string", "null"] }
         }
       }
     },

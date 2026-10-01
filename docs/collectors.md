@@ -6,7 +6,8 @@ Linux Server Audit implements a comprehensive suite of observational collectors.
 
 - `name`: Unique identifier
 - `category`: Subsystem grouping (system, hardware, storage, network, security, runtime, services, containers, applications)
-- `requires_root`: Boolean indicating whether elevated privilege (`sudo`) is required
+- `privilege`: Privilege requirement level (`NONE`, `OPTIONAL`, `REQUIRED`)
+- `requires_root`: Legacy compatibility boolean (retains historical value during deprecation window)
 - `network_access`: Must be `False` for core offline collectors
 - `writes_system_state`: Must be `False`
 - `collects_secrets`: Must be `False`
@@ -15,13 +16,13 @@ Linux Server Audit implements a comprehensive suite of observational collectors.
 
 ## Implemented Collectors
 
-| Collector | Category | Root Required | Inspected Subsystems |
-|---|---|---|---|
-| `system` | System | No | Distribution, kernel release, uptime, virtualization, boot mode (UEFI/BIOS) |
-| `hardware` | Hardware | No (optional DMI) | Motherboard, platform manufacturer, chassis, DMI metadata |
-| `firmware` | Firmware | No | BIOS vendor, version, release date, UEFI runtime, Secure Boot state, TPM version |
-| `cpu` | Hardware | No | Cores, logical CPUs, thread topology, governor, frequencies, cache, kernel mitigations |
-| `memory` | Hardware | No (optional DMI) | RAM metrics, swap utilization, DIMM slots/speeds, HugePages, PSI memory pressure |
+| Collector | Category | Privilege Level | Root Required (Legacy) | Inspected Subsystems |
+|---|---|---|---|---|
+| `system` | System | NONE | No | Distribution, kernel release, uptime, virtualization, boot mode (UEFI/BIOS) |
+| `hardware` | Hardware | OPTIONAL | No | Motherboard, platform manufacturer, chassis, DMI metadata |
+| `firmware` | Firmware | NONE | No | BIOS vendor, version, release date, UEFI runtime, Secure Boot state, TPM version |
+| `cpu` | Hardware | NONE | No | Cores, logical CPUs, thread topology, governor, frequencies, cache, kernel mitigations |
+| `memory` | Hardware | OPTIONAL | No | RAM metrics, swap utilization, DIMM slots/speeds, HugePages, PSI memory pressure |
 | `pci` | Hardware | No | PCI devices, GPUs, NICs, storage controllers, kernel drivers, IOMMU |
 | `usb` | Hardware | No | USB controllers, buses, topology, connected devices, security tokens |
 | `storage` | Storage | No | Block devices, partitions, rotational vs SSD/NVMe, sizes, UUIDs |

@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -18,6 +18,7 @@ class UsersCollector(BaseCollector):
         name="users",
         category="security",
         description="Collect local users, groups, sudoers memberships, UID 0 accounts, and login shells",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -61,24 +62,28 @@ class UsersCollector(BaseCollector):
             if sg in group_members:
                 sudo_usernames.update(group_members[sg])
 
-        # 2. Check password status (L/P/NP) without hashes from /etc/shadow
+        # 2. Check password status (L/P/NP) without hashes from /etc/shadow if permitted
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
         shadow_status: Dict[str, str] = {}
-        shadow_content = executor.read_file("/etc/shadow", use_sudo=True)
-        if shadow_content:
-            for line in shadow_content.splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split(":")
-                if len(parts) >= 2:
-                    uname = parts[0]
-                    pwd_field = parts[1]
-                    if pwd_field in ("!", "*", "!!", ""):
-                        shadow_status[uname] = "LOCKED"
-                    elif pwd_field.startswith("!"):
-                        shadow_status[uname] = "LOCKED"
-                    else:
-                        shadow_status[uname] = "ACTIVE_PASSWORD"
+
+        if can_elevate:
+            shadow_content = executor.read_file("/etc/shadow", use_sudo=True)
+            if shadow_content:
+                for line in shadow_content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        uname = parts[0]
+                        pwd_field = parts[1]
+                        if pwd_field in ("!", "*", "!!", ""):
+                            shadow_status[uname] = "LOCKED"
+                        elif pwd_field.startswith("!"):
+                            shadow_status[uname] = "LOCKED"
+                        else:
+                            shadow_status[uname] = "ACTIVE_PASSWORD"
 
         # 3. Parse /etc/passwd
         passwd_content = executor.read_file("/etc/passwd")

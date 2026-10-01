@@ -182,7 +182,7 @@ class HtmlRenderer:
             </div>
             <div class="header-meta" style="text-align: right;">
                 <div>Audit: <strong>{timestamp}</strong></div>
-                <div>Profile: <code>{meta.get('profile', 'private')}</code></div>
+                <div>Mode: <code>{meta.get('audit_mode', 'user').upper()}</code> &bull; Profile: <code>{meta.get('profile', 'private')}</code></div>
             </div>
         </header>
 

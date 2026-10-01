@@ -10,7 +10,7 @@ Linux Server Audit is modular. Adding a new collector requires implementing the 
 2. **Define the Class**:
    ```python
    from typing import Any, Dict
-   from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+   from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
    from ..core.executor import CommandExecutor
    from . import register_collector
 
@@ -20,6 +20,7 @@ Linux Server Audit is modular. Adding a new collector requires implementing the 
            name="example",
            category="hardware",
            description="Inspects example hardware subsystem",
+           privilege=PrivilegeLevel.NONE,
            requires_root=False,
            network_access=False,
            writes_system_state=False,
