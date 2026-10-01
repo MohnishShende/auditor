@@ -32,6 +32,12 @@ def main() -> int:
 
     # Command: audit
     audit_parser = subparsers.add_parser("audit", help="Run a server audit")
+    audit_parser.add_argument(
+        "--mode",
+        choices=["user", "sudo"],
+        default=None,
+        help="Audit execution mode: 'user' (unprivileged, zero sudo) or 'sudo' (elevated checks)",
+    )
     audit_parser.add_argument("--profile", choices=["private", "public"], default="private", help="Audit profile (default: private)")
     audit_parser.add_argument("--output-dir", default="audits", help="Directory to store audit bundles (default: audits)")
     audit_parser.add_argument("--format", default="markdown,json,html", help="Comma-separated formats: markdown,json,html,pdf")
@@ -66,19 +72,74 @@ def main() -> int:
 
     # Default to 'audit' if no arguments provided
     args = parser.parse_args()
-    if args.command is None:
-        orchestrator = AuditOrchestrator()
-        orchestrator.run_audit()
-        return 0
+    if args.command is None or args.command == "audit":
+        from ..core.privileges import AuditMode, PrivilegeManager
+        from ..core.executor import CommandExecutor
+        import os
 
-    if args.command == "audit":
-        formats = [f.strip() for f in args.format.split(",") if f.strip()]
+        # 1. Determine AuditMode
+        raw_mode = getattr(args, "mode", None)
+        if raw_mode:
+            selected_mode = AuditMode.SUDO if raw_mode.lower() == "sudo" else AuditMode.USER
+        else:
+            # When --mode is omitted:
+            # If stdin is a TTY, prompt the user
+            # If stdin is non-interactive, default deterministically to USER mode
+            if sys.stdin.isatty():
+                try:
+                    print("Select audit execution mode:")
+                    print("  [1] user - unprivileged audit (hard guarantee: zero sudo invocations)")
+                    print("  [2] sudo - elevated audit (validates sudo once at startup)")
+                    choice = input("Enter choice [1/2] (default: 1): ").strip()
+                    selected_mode = AuditMode.SUDO if choice == "2" else AuditMode.USER
+                except (EOFError, KeyboardInterrupt):
+                    print("\nAudit aborted.")
+                    return 130
+            else:
+                selected_mode = AuditMode.USER
+
+        # 2. Invariant check: os.geteuid() == 0 and mode == USER
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and selected_mode == AuditMode.USER:
+            sys.stderr.write(
+                "Error: AuditMode.USER cannot be run as root (EUID 0). "
+                "User mode must be executed as a non-root user. "
+                "To audit as root or with elevated privileges, run in sudo mode: 'serveraudit audit --mode sudo'.\n"
+            )
+            return 1
+
+        # 3. Construct mode-aware PrivilegeManager
+        priv_mgr = PrivilegeManager(mode=selected_mode)
+
+        # 4. If SUDO mode and EUID != 0, run interactive sudo -v once
+        if selected_mode == AuditMode.SUDO:
+            if not priv_mgr.is_root:
+                valid = priv_mgr.validate_sudo()
+                if not valid:
+                    sys.stderr.write(
+                        "Warning: Sudo validation failed or was cancelled. "
+                        "Privileged collection will be unavailable; REQUIRED collectors will be skipped.\n"
+                    )
+
+        # 5. Construct mode-aware CommandExecutor
+        executor = CommandExecutor(privilege_manager=priv_mgr, mode=selected_mode)
+
+        # 6. Run orchestrator
+        profile = getattr(args, "profile", "private")
+        output_dir = getattr(args, "output_dir", "audits")
+        format_arg = getattr(args, "format", "markdown,json,html")
+        formats = [f.strip() for f in format_arg.split(",") if f.strip()]
+        config_file = getattr(args, "config", None)
+        quiet = getattr(args, "quiet", False)
+
         orchestrator = AuditOrchestrator(
-            profile=args.profile,
-            output_dir=args.output_dir,
+            mode=selected_mode,
+            profile=profile,
+            output_dir=output_dir,
             formats=formats,
-            config_file=args.config,
-            quiet=args.quiet,
+            config_file=config_file,
+            quiet=quiet,
+            privilege_manager=priv_mgr,
+            executor=executor,
         )
         orchestrator.run_audit()
         return 0

@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -17,11 +17,12 @@ class PortsCollector(BaseCollector):
         name="ports",
         category="network",
         description="Collect listening TCP and UDP ports, bound addresses, owning processes, and service exposure",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
         collects_secrets=False,
-        commands=["ss -tulpn", "netstat -tulpn"],
+        commands=["ss -tulpn", "ss -tuln"],
         outputs=["listening_ports", "loopback_only", "exposed_lan", "exposed_public"],
     )
 
@@ -33,8 +34,15 @@ class PortsCollector(BaseCollector):
             "exposed_specific": [],
         }
 
-        # 1. Prefer ss -tulpn (iproute2)
-        ss_res = executor.run(["ss", "-tulpn"], use_sudo=True)
+        # In USER mode or if privileges cannot elevate, execute unprivileged ss -tuln
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
+        if can_elevate:
+            ss_res = executor.run(["ss", "-tulpn"], use_sudo=True)
+        else:
+            ss_res = executor.run(["ss", "-tuln"], use_sudo=False)
+
         if ss_res.success and ss_res.stdout:
             for line in ss_res.stdout.splitlines()[1:]:
                 parts = line.split()

@@ -13,7 +13,7 @@ import subprocess
 import time
 from typing import List, Optional, Tuple
 
-from .privileges import PrivilegeManager
+from .privileges import PrivilegeManager, AuditMode
 
 
 # Strict safety denylist of standalone binaries that modify state
@@ -66,8 +66,17 @@ class ExecutionLogEntry:
 class CommandExecutor:
     """Executes purely observational commands and reads files safely."""
 
-    def __init__(self, privilege_manager: Optional[PrivilegeManager] = None) -> None:
-        self.privileges = privilege_manager or PrivilegeManager()
+    def __init__(
+        self,
+        privilege_manager: Optional[PrivilegeManager] = None,
+        mode: Optional[AuditMode] = None,
+    ) -> None:
+        if privilege_manager is not None:
+            self.privileges = privilege_manager
+            self.mode = mode or privilege_manager.mode
+        else:
+            self.mode = mode or AuditMode.USER
+            self.privileges = PrivilegeManager(mode=self.mode)
         self.execution_log: List[ExecutionLogEntry] = []
 
     def which(self, binary: str) -> Optional[str]:
@@ -99,6 +108,45 @@ class CommandExecutor:
         check_safety: bool = True,
     ) -> CommandOutput:
         """Executes a command safely without shell=True."""
+        if not cmd:
+            return CommandOutput(
+                command=[],
+                stdout="",
+                stderr="Empty command",
+                returncode=126,
+                duration_seconds=0.0,
+                success=False,
+                used_sudo=False,
+                error_message="Empty command",
+            )
+
+        # In USER mode, hard invariant:
+        # 1. If use_sudo is requested, immediately return deterministic denial without subprocess
+        if self.mode == AuditMode.USER and use_sudo:
+            return CommandOutput(
+                command=cmd,
+                stdout="",
+                stderr="PrivilegePolicyViolation: Sudo execution is forbidden in user mode",
+                returncode=126,
+                duration_seconds=0.0,
+                success=False,
+                used_sudo=False,
+                error_message="PrivilegePolicyViolation",
+            )
+
+        # 2. If argv execution is used and basename(cmd[0]) == "sudo", reject in USER mode
+        if self.mode == AuditMode.USER and Path(cmd[0]).name == "sudo":
+            return CommandOutput(
+                command=cmd,
+                stdout="",
+                stderr="PrivilegePolicyViolation: Direct invocation of sudo is forbidden in user mode",
+                returncode=126,
+                duration_seconds=0.0,
+                success=False,
+                used_sudo=False,
+                error_message="PrivilegePolicyViolation",
+            )
+
         if check_safety:
             safe, reason = self.is_safe_command(cmd)
             if not safe:
