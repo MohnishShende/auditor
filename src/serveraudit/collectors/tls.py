@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -20,6 +20,7 @@ class TlsCollector(BaseCollector):
         name="tls",
         category="security",
         description="Inspect X.509 TLS certificates, expiration dates, SANs, issuers, and near-expiry warnings",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -41,6 +42,9 @@ class TlsCollector(BaseCollector):
             "expired_certificates": [],
             "expiring_soon": [],
         }
+
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
 
         # Targeted certificate search paths (avoid massive system CA bundle duplicates)
         search_dirs = [
@@ -67,7 +71,10 @@ class TlsCollector(BaseCollector):
 
         # Inspect found certificates (up to 25 to avoid overhead)
         for cert_path in found_certs[:25]:
-            res = executor.run(["openssl", "x509", "-in", str(cert_path), "-noout", "-dates", "-subject", "-issuer"], use_sudo=True)
+            res = executor.run(
+                ["openssl", "x509", "-in", str(cert_path), "-noout", "-dates", "-subject", "-issuer"],
+                use_sudo=can_elevate,
+            )
             if res.success and res.stdout:
                 subject = None
                 issuer = None

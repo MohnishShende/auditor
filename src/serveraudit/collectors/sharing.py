@@ -9,7 +9,7 @@ import io
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -20,6 +20,7 @@ class SharingCollector(BaseCollector):
         name="sharing",
         category="services",
         description="Inspect Samba (SMB) shares and NFS export definitions and access policies",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -34,8 +35,11 @@ class SharingCollector(BaseCollector):
             "nfs_exports": [],
         }
 
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
         # 1. Samba (/etc/samba/smb.conf)
-        smb_conf = executor.read_file("/etc/samba/smb.conf", use_sudo=True)
+        smb_conf = executor.read_file("/etc/samba/smb.conf", use_sudo=can_elevate)
         if smb_conf:
             try:
                 # Parse ini-style smb.conf
@@ -57,7 +61,7 @@ class SharingCollector(BaseCollector):
                 pass
 
         # 2. NFS Exports (/etc/exports)
-        nfs_exports = executor.read_file("/etc/exports", use_sudo=True)
+        nfs_exports = executor.read_file("/etc/exports", use_sudo=can_elevate)
         if nfs_exports:
             for line in nfs_exports.splitlines():
                 line = line.strip()

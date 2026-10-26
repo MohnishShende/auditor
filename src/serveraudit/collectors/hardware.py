@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -17,6 +17,7 @@ class HardwareCollector(BaseCollector):
         name="hardware",
         category="hardware",
         description="Collect motherboard, chassis, system manufacturer, and DMI metadata",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=False,
         network_access=False,
         writes_system_state=False,
@@ -79,8 +80,10 @@ class HardwareCollector(BaseCollector):
                     if val and val != "None" and val != "Default string":
                         data[section][key] = val
 
-        # 2. If privileged dmidecode is available, supplement any missing details
-        if executor.which("dmidecode") and executor.privileges.can_elevate:
+        # 2. If privileged dmidecode is available (and not USER mode), supplement any missing details
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+        if executor.which("dmidecode") and can_elevate:
             # System
             dmi_sys = executor.run(["dmidecode", "-t", "system"], use_sudo=True)
             if dmi_sys.success:

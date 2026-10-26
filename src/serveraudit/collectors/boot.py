@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -18,6 +18,7 @@ class BootCollector(BaseCollector):
         name="boot",
         category="system",
         description="Inspect bootloader, GRUB default parameters, EFI boot variables, and kernel command line",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=False,
         network_access=False,
         writes_system_state=False,
@@ -54,8 +55,10 @@ class BootCollector(BaseCollector):
             except Exception:
                 pass
 
-        # 3. efibootmgr
-        if data["boot_mode"] == "UEFI" and executor.which("efibootmgr"):
+        # 3. efibootmgr (privileged)
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+        if data["boot_mode"] == "UEFI" and executor.which("efibootmgr") and can_elevate:
             efi_res = executor.run(["efibootmgr"], use_sudo=True)
             if efi_res.success and efi_res.stdout:
                 for line in efi_res.stdout.splitlines():
