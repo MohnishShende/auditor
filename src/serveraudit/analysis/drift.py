@@ -7,6 +7,22 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Set
 
 
+# Categories built from root-only collectors: an unprivileged run cannot read them, so its
+# "unknown" / empty values must not be compared against a privileged run's real ones.
+PRIVILEGED_CATEGORIES = {
+    "SSH Configuration": "ssh",
+    "Listening Ports": "ports",
+    "Users & Groups": "users",
+}
+
+
+def _unprivileged_gap(snapshot: Dict[str, Any], collector: str) -> bool:
+    """True when this snapshot ran without elevation and the collector did not fully succeed."""
+    if snapshot.get("metadata", {}).get("privileges_available", True):
+        return False
+    return snapshot.get("collectors", {}).get(collector, {}).get("status", "SUCCESS") != "SUCCESS"
+
+
 def compare_snapshots(snapshot_a: Dict[str, Any], snapshot_b: Dict[str, Any]) -> Dict[str, Any]:
     """Compares two canonical audit JSON dictionaries and outputs structured drift."""
     drift_report: Dict[str, Any] = {
@@ -14,6 +30,7 @@ def compare_snapshots(snapshot_a: Dict[str, Any], snapshot_b: Dict[str, Any]) ->
         "metadata_b": snapshot_b.get("metadata", {}),
         "has_drift": False,
         "categories": {},
+        "not_compared": [],
     }
 
     # 1. System / Kernel Drift
@@ -131,5 +148,17 @@ def compare_snapshots(snapshot_a: Dict[str, Any], snapshot_b: Dict[str, Any]) ->
             "new_count": pkg_b,
         }
         drift_report["has_drift"] = True
+
+    # Drop categories that cannot be compared because an unprivileged run could not collect them.
+    for category, collector in PRIVILEGED_CATEGORIES.items():
+        sides = [n for n, snap in (("A", snapshot_a), ("B", snapshot_b)) if _unprivileged_gap(snap, collector)]
+        if sides:
+            drift_report["categories"].pop(category, None)
+            drift_report["not_compared"].append({
+                "category": category,
+                "reason": f"snapshot {' and '.join(sides)} could not collect '{collector}' without elevation; "
+                          "run both audits with --mode sudo to compare it",
+            })
+    drift_report["has_drift"] = bool(drift_report["categories"])
 
     return drift_report

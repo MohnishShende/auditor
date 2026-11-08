@@ -37,8 +37,18 @@ def run_diff(snapshot_a_path: str, snapshot_b_path: str, base_dir: str = "audits
     print(f"Snapshot B: {meta_b.get('hostname')} ({meta_b.get('timestamp')})")
     print("----------------------------------------------------------------------")
 
+    not_compared = drift.get("not_compared", [])
+    if not_compared:
+        print("NOT COMPARED (collected without elevation in at least one snapshot):")
+        for item in not_compared:
+            print(f"  ! {item['category']}: {item['reason']}")
+        print("----------------------------------------------------------------------")
+
     if not drift.get("has_drift"):
-        print("✓ No configuration drift detected between these snapshots.")
+        if not_compared:
+            print("No drift detected in the categories that could be compared (see above).")
+        else:
+            print("✓ No configuration drift detected between these snapshots.")
         print("======================================================================")
         return 0
 
