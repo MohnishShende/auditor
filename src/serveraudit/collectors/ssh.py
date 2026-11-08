@@ -70,9 +70,11 @@ class SshCollector(BaseCollector):
         is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
         can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
 
+        effective_collected = False
         if executor.which("sshd") and can_elevate:
             sshd_t = executor.run(["sshd", "-T"], use_sudo=True)
             if sshd_t.success and sshd_t.stdout:
+                effective_collected = True
                 data["service_active"] = True
                 cfg: Dict[str, str] = {}
                 for line in sshd_t.stdout.splitlines():
@@ -107,6 +109,15 @@ class SshCollector(BaseCollector):
                             "type": parts[3].strip("()"),
                         })
 
+        if not effective_collected:
+            # "unknown" below means "could not be read", not "unset": sshd -T needs root.
+            return CollectorResult(
+                collector=self.name,
+                status=CollectorStatus.PARTIAL,
+                data=data,
+                message="SSH effective config not collected: sshd -T requires --mode sudo "
+                        "(host key fingerprints collected)",
+            )
         return CollectorResult(
             collector=self.name,
             status=CollectorStatus.SUCCESS,
