@@ -30,7 +30,7 @@ class SanitizationProfile(str, Enum):
 SECRET_LAST_WORDS = frozenset({
     "password", "passwords", "passwd", "passphrase", "pass", "pwd",
     "secret", "secrets", "token", "tokens", "apikey", "privkey",
-    "credential", "credentials", "bearer",
+    "credential", "credentials", "bearer", "authorization",
 })
 # Words that denote a secret value wherever they appear in a key, because they
 # are not used to name settings about secrets (secret_key_base, smtp_passwd_file).
@@ -43,11 +43,19 @@ SECRET_ANY_WORDS = frozenset({
 # private_key, aws_secret_access_key, signing_key).
 SECRET_KEY_QUALIFIERS = frozenset({
     "api", "secret", "private", "access", "auth", "signing", "encryption",
-    "master", "license", "session", "service", "account",
+    "master", "license", "session", "service", "account", "certificate",
 })
+# "<password-ish>_hash" / "_digest" / "_salt" name a derived credential
+# (password_hash, user_password_hash) and are redacted like the password itself.
+SECRET_DERIVED_LAST_WORDS = frozenset({"hash", "hashes", "hashed", "digest", "salt"})
+SECRET_DERIVED_BASE_WORDS = frozenset({"password", "passwd", "pwd", "pass", "passphrase"})
+# Single-word keys that are secrets on their own (pass, pwd, auth, bearer, authorization).
+SECRET_SINGLE_WORDS = frozenset({"pass", "pwd", "auth", "authorization", "bearer"})
+# Exact spellings that look like secret words but are not: the shell's working directory.
+NON_SECRET_EXACT_NAMES = frozenset({"PWD", "OLDPWD"})
 # Single-word keys are matched by suffix so that PGPASSWORD, JWTSECRET or
-# GITHUBTOKEN are still caught; "pwd", "pass" and "bearer" alone are not secrets
-# (PWD, OLDPWD).
+# GITHUBTOKEN are still caught. The shell variables PWD and OLDPWD are the one
+# exception (NON_SECRET_EXACT_NAMES); lower-case "pwd" is still a password.
 SECRET_WORD_SUFFIXES = ("password", "passwd", "passphrase", "secret", "token", "apikey")
 
 _CAMEL_BOUNDARY_REGEX = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -62,17 +70,23 @@ def key_words(key_name: str) -> list[str]:
 
 def is_secret_key_name(key_name: str) -> bool:
     """Determines whether a key names a secret VALUE, as opposed to a setting about secrets."""
+    if key_name in NON_SECRET_EXACT_NAMES:
+        return False
     words = key_words(key_name or "")
     if not words:
         return False
     last = words[-1]
     if len(words) == 1:
-        if last in ("pass", "pwd", "bearer"):
-            return False
-        return last in SECRET_LAST_WORDS or last.endswith(SECRET_WORD_SUFFIXES)
+        return (
+            last in SECRET_SINGLE_WORDS
+            or last in SECRET_LAST_WORDS
+            or last.endswith(SECRET_WORD_SUFFIXES)
+        )
     if last in SECRET_LAST_WORDS:
         return True
-    if last == "key" and any(w in SECRET_KEY_QUALIFIERS for w in words[:-1]):
+    if last in ("key", "keys") and any(w in SECRET_KEY_QUALIFIERS for w in words[:-1]):
+        return True
+    if last in SECRET_DERIVED_LAST_WORDS and any(w in SECRET_DERIVED_BASE_WORDS for w in words[:-1]):
         return True
     return any(w in SECRET_ANY_WORDS for w in words)
 
@@ -98,6 +112,12 @@ BEARER_TOKEN_REGEX = re.compile(
 # is_secret_key_name() so DB_PASS=... is redacted but MaxAuthTries=6 is not.
 NAMED_VALUE_REGEX = re.compile(
     r"""\b([A-Za-z][A-Za-z0-9_.-]*)\s*([:=])\s*['"]?([^'"\s,;&]+)['"]?"""
+)
+
+# "Authorization: <scheme> <credentials>": the scheme word is not the secret, the rest is,
+# so the whole header value is redacted (Bearer, Basic, Token, Digest, ...).
+AUTHORIZATION_HEADER_REGEX = re.compile(
+    r"""(?i)\b([A-Za-z_-]*authorization)\s*([:=])\s*[^\r\n"']+"""
 )
 
 # MAC address pattern
@@ -166,6 +186,17 @@ class Sanitizer:
         """Determines if a configuration or environment key name implies secret content."""
         return is_secret_key_name(key_name)
 
+    @staticmethod
+    def _redact_named_value(match: "re.Match[str]") -> str:
+        name, sep = match.group(1), match.group(2)
+        # "Pass: `no`" is a fixed label in the Markdown report (SSH summary), not a
+        # credential, so a bare "pass" is only a secret in "pass=value" assignments.
+        if name.lower() == "pass" and sep == ":":
+            return match.group(0)
+        if is_secret_key_name(name):
+            return f"{name}{sep}[REDACTED]"
+        return match.group(0)
+
     def sanitize_string(self, text: str, key_context: Optional[str] = None) -> str:
         """Sanitizes sensitive values from a string."""
         if not text:
@@ -196,12 +227,10 @@ class Sanitizer:
         # Redact key-value secrets in text (e.g. password=XYZ, DB_PASS: 123)
         if self.config.redact_passwords or self.config.redact_tokens:
             text = KEY_VALUE_SECRET_REGEX.sub(r"\1\2[REDACTED]", text)
+            text = AUTHORIZATION_HEADER_REGEX.sub(r"\1\2[REDACTED]", text)
             # Redact NAME=value pairs whose NAME denotes a secret (same rules as
             # dictionary keys), e.g. DB_PASS=..., but not PasswordAuthentication=no.
-            text = NAMED_VALUE_REGEX.sub(
-                lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]" if is_secret_key_name(m.group(1)) else m.group(0),
-                text,
-            )
+            text = NAMED_VALUE_REGEX.sub(self._redact_named_value, text)
 
         # Redact Bearer / Basic tokens
         if self.config.redact_tokens:

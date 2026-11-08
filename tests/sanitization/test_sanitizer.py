@@ -178,3 +178,61 @@ def test_named_values_in_free_text():
     sanitizer = Sanitizer()
     text = "MaxAuthTries=6 PasswordAuthentication=no DB_PASS=hunter2 token: abc123"
     assert sanitizer.sanitize(text) == "MaxAuthTries=6 PasswordAuthentication=no DB_PASS=[REDACTED] token:[REDACTED]"
+
+
+# Regression tests for keys that the substring patterns on main redacted and the
+# word-based classifier initially stopped redacting.
+REGRESSED_SECRET_KEY_NAMES = [
+    "authorization", "Authorization", "auth", "AUTH", "pass", "PASS", "pwd", "bearer",
+    "proxy_authorization", "certificate_key", "ssl_certificate_key",
+    "api_keys", "private_keys", "access_keys",
+    "password_hash", "passwd_hash", "user_password_hash",
+]
+
+
+@pytest.mark.parametrize("key", REGRESSED_SECRET_KEY_NAMES)
+def test_regressed_secret_key_names_are_redacted(key):
+    sanitizer = Sanitizer()
+    assert sanitizer.is_secret_key(key)
+    assert sanitizer.sanitize({key: "hunter2"})[key] == "[REDACTED]"
+    assert sanitizer.sanitize(f"{key}=hunter2") == f"{key}=[REDACTED]"
+
+
+def test_pwd_environment_variable_is_not_a_secret_but_lowercase_pwd_is():
+    sanitizer = Sanitizer()
+    # PWD / OLDPWD are the shell's working directory, not passwords.
+    assert sanitizer.sanitize("PWD=/home/user") == "PWD=/home/user"
+    assert sanitizer.sanitize("OLDPWD=/tmp") == "OLDPWD=/tmp"
+    assert sanitizer.sanitize("pwd=hunter2") == "pwd=[REDACTED]"
+
+
+def test_report_label_pass_colon_is_preserved_but_pass_equals_is_redacted():
+    """markdown.py renders the SSH summary as "Pass: `no`"; that label is not a secret."""
+    sanitizer = Sanitizer()
+    line = "Port 22 (Root: `no`, Pass: `no`)"
+    assert sanitizer.sanitize(line) == line
+    assert sanitizer.sanitize("pass=hunter2") == "pass=[REDACTED]"
+    assert sanitizer.sanitize({"pass": "hunter2"})["pass"] == "[REDACTED]"
+
+
+@pytest.mark.parametrize("key", [
+    "password_authentication", "passno", "max_auth_tries", "password_status",
+    "spec_store_bypass", "overall_health_passed", "authorized_keys_file",
+    "host_keys", "security_keys", "public_keys", "password_expiry_days",
+])
+def test_improvements_survive_regression_fix(key):
+    sanitizer = Sanitizer()
+    assert not sanitizer.is_secret_key(key)
+    assert sanitizer.sanitize({key: "no"})[key] == "no"
+
+
+@pytest.mark.parametrize("header", [
+    "Authorization: Bearer eyJhbGciOi.fakepayload.fakesignature",
+    "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+    "Authorization: Token abc123def456",
+    "Proxy-Authorization: Digest username=bob response=deadbeef",
+])
+def test_authorization_header_value_is_fully_redacted(header):
+    out = Sanitizer().sanitize(f"GET / HTTP/1.1 {header}\nHost: x")
+    name = header.split(":")[0]
+    assert out == f"GET / HTTP/1.1 {name}:[REDACTED]\nHost: x"
