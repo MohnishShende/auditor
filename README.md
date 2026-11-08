@@ -59,7 +59,7 @@ It is built around four promises:
 - **Read-only.** It only observes. It never installs, restarts, mounts, formats, or edits anything. A command denylist enforces this in code.
 - **Local.** No cloud, no telemetry, no outbound network, and **no AI in the tool**. The report is generated deterministically, so the same server gives the same report.
 - **Honest.** When it could not read something (no root, tool not installed), the report says *not collected*. It never presents a gap as a healthy value.
-- **Safe to share (with care).** Secrets are redacted in every report, and a `public` profile also masks IPs, MACs and serial numbers. See [what `public` does not mask](#-profiles-private-vs-public) before posting a report anywhere public.
+- **Safe to share (with care).** Secrets are redacted in every report, and a `public` profile also masks the hostname, IPs, MACs and serial numbers. See [what `public` does not mask](#-profiles-private-vs-public) before posting a report anywhere public.
 
 ```mermaid
 flowchart LR
@@ -225,14 +225,14 @@ Every report is redacted for secrets. The profile decides how much *identifying 
 | | `private` (default) | `public` |
 |---|---|---|
 | Passwords, tokens, API keys, private keys, password hashes, secret environment values | **Redacted** | **Redacted** |
-| Internal IPv4 addresses | Kept | Masked (`192.168.x.x`, `10.x.x.x`; other IPv4 → `xxx.xxx.xxx.xxx`) |
+| IPv4 addresses | Kept | Masked (`192.168.x.x`, `10.x.x.x`, `172.17.x.x`; public IPv4 → `xxx.xxx.xxx.xxx`) |
 | MAC addresses | Kept | Last three bytes masked (`aa:bb:cc:xx:xx:xx`) |
 | Disk serials, machine IDs, device UUIDs | Kept | Redacted (`[REDACTED_SERIAL]`, `[REDACTED_ID]`) |
-| **Hostname** | Kept | **Not masked** |
-| **IPv6 addresses** | Kept | **Not masked** |
+| IPv6 addresses | Kept | Masked (`fe80:x:x:x:x:x:x:x`; `::1` is left alone) |
+| Hostname | Kept | Replaced by `[REDACTED_HOST]` everywhere, including `manifest.json`; the folder is named `host-<timestamp>` |
 | Intended for | You, your team, your private notes | Forums, issue trackers, support tickets, AI assistants |
 
-> ⚠️ **Read a `public` report once before you post it.** It still contains the hostname (also in the folder name) and any IPv6 addresses. Docker container names, application names, usernames and installed-package names are also left as they are. `public` removes secrets and the most identifying hardware and network details. It does not make a report anonymous.
+> ⚠️ **Read a `public` report once before you post it.** It still contains **usernames, Docker container and application names, installed-package names, domain names and the names of other machines** (for example Caddy sites or DNS servers). If your username or a container name is identifying, edit it out. `public` removes secrets and the most identifying host, hardware and network details. It does not make a report anonymous.
 
 ### What redaction catches
 
@@ -308,7 +308,7 @@ See [web dashboard](#-web-dashboard).
 
 ```text
 audits/
-└── <hostname>-<timestamp>/
+└── <hostname>-<timestamp>/      # public profile: host-<timestamp>
     ├── audit.md           # human-readable report (always)
     ├── audit.json         # canonical structured data (always)
     ├── audit.html         # standalone HTML report (default; drop it with --format)
@@ -607,7 +607,7 @@ To do that safely:
 
 1. **Use `--profile public`.** A `private` report contains your real IPs, MACs and serials.
 2. **Run `--mode sudo`** if you want advice on SSH, firewall, users or SMART. In user mode those sections say *not collected*, and a good assistant will tell you so.
-3. **Skim the report first.** `public` still contains the hostname, IPv6 addresses and container and application names. See [what `public` does not mask](#-profiles-private-vs-public).
+3. **Skim the report first.** `public` still contains usernames, container and application names, domain names and other machines' names. See [what `public` does not mask](#-profiles-private-vs-public).
 4. **Check the header.** It states the mode, the profile and any coverage gaps, so the assistant (and you) know what the report does not include.
 
 ---
@@ -637,7 +637,7 @@ Honest status, so nothing surprises you:
 | **Windows** | Not supported. CI does not run on Windows. |
 | **Other Linux distributions** | The audit runs. The package inventory is Debian-family only. |
 | `--config FILE` and the files in `config/` | **Accepted but not applied** in this version. Use `--profile`, `--format` and `--output-dir`. The YAML files are reference templates for planned work. |
-| **Public profile** | Does not mask the hostname or IPv6 addresses. See [profiles](#-profiles-private-vs-public). |
+| **Public profile** | Masks secrets, the hostname, IPs, MACs and serials, but not usernames, container or application names, domain names or other machines' names. See [profiles](#-profiles-private-vs-public). |
 | **PDF output** | Needs WeasyPrint. Requested via `audit --format ...pdf` without it, the PDF is skipped silently. |
 | **Restricted sudo rules** | Sudo rules that allow only specific commands (instead of `ALL`) are not recognized by the passwordless check. In a terminal you are asked for a password. Without one, the audit runs unprivileged and says so. |
 | **Very long audits** | With password sudo, the credential timestamp can expire during a very long run. Audits normally take seconds. |
