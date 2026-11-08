@@ -6,18 +6,27 @@ Operates unprivileged, allowing audit triggering, report browsing, and drift com
 from __future__ import annotations
 import html
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
+from typing import Any, Iterable
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 from .. import __version__
 from ..cli.audit import AuditOrchestrator
 from ..core.snapshot import SnapshotManager
 from ..analysis.drift import compare_snapshots
+
+
+# A snapshot identifier is "<hostname>-<timestamp>" as created by SnapshotManager:
+# plain characters only, never a path.
+SNAPSHOT_NAME_REGEX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 class AuditWebHandler(BaseHTTPRequestHandler):
@@ -26,6 +35,8 @@ class AuditWebHandler(BaseHTTPRequestHandler):
     base_dir: Path = Path("audits")
     is_auditing: bool = False
     last_audit_message: str = ""
+    # Extra Host header names accepted besides loopback (explicit opt-in, --allowed-host).
+    allowed_hosts: frozenset = frozenset()
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress noisy standard request logging
@@ -47,7 +58,72 @@ class AuditWebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response_bytes)
 
+    def snapshot_dir(self, name: str) -> Path | None:
+        """Maps a snapshot identifier to its directory inside base_dir.
+
+        Returns None for anything that is not a plain identifier (path separators,
+        "..", percent-encoding, absolute paths), so a request can never reach a
+        file outside the snapshot directory.
+        """
+        if not name or not SNAPSHOT_NAME_REGEX.match(name):
+            return None
+        base = self.base_dir.resolve()
+        target = (base / name).resolve()
+        if target.parent != base:
+            return None
+        return target
+
+    def is_host_allowed(self) -> bool:
+        """Checks the Host header of EVERY request (GET and POST) against an allow-list.
+
+        Defeats DNS rebinding: a rebound page is same-origin with the server from the
+        browser's point of view, so Origin / Sec-Fetch-Site look legitimate and it can
+        set arbitrary headers without a CORS preflight; only the Host it must send
+        (the attacker's name) gives it away. Forwarding headers (X-Forwarded-*,
+        Forwarded) are never trusted here, since the client can set them.
+
+        Enforced when the server is bound to a loopback address, or whenever
+        ``allowed_hosts`` is configured. A reverse proxy must forward the original
+        Host header (Caddy and nginx ``proxy_set_header Host $host`` do) and its
+        public name must be listed with ``--allowed-host``.
+        """
+        if not (self._bound_to_loopback() or self.allowed_hosts):
+            return True
+        try:
+            hostname = urlsplit(f"//{self.headers.get('Host', '')}").hostname
+        except ValueError:
+            return False
+        return hostname is not None and (hostname in LOOPBACK_HOSTS or hostname in self.allowed_hosts)
+
+    def _bound_to_loopback(self) -> bool:
+        try:
+            return ipaddress.ip_address(self.server.server_address[0]).is_loopback
+        except ValueError:
+            return self.server.server_address[0] in LOOPBACK_HOSTS
+
+    def is_trusted_request(self) -> bool:
+        """Rejects state-changing requests that a browser would send cross-site.
+
+        - Sec-Fetch-Site, when present, must be same-origin or none.
+        - Otherwise an Origin header, when present, must equal the Host header.
+        Requests without browser headers (curl, scripts) are unaffected. The Host
+        header itself is validated for all requests by is_host_allowed().
+        """
+        headers = self.headers
+        fetch_site = headers.get("Sec-Fetch-Site", "").lower()
+        if fetch_site:
+            return fetch_site in ("same-origin", "none")
+        origin = headers.get("Origin")
+        if origin is None:
+            return True
+        if origin.lower() == "null":
+            return False
+        return urlsplit(origin).netloc.lower() == headers.get("Host", "").strip().lower()
+
     def do_GET(self) -> None:
+        if not self.is_host_allowed():
+            self.send_json_response({"error": "Host not allowed"}, status=403)
+            return
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
@@ -64,25 +140,32 @@ class AuditWebHandler(BaseHTTPRequestHandler):
             self.send_json_response(sm.list_snapshots())
 
         elif path.startswith("/api/snapshot/"):
-            snap_name = path.replace("/api/snapshot/", "").strip("/")
-            if "/md" in snap_name:
-                snap_id = snap_name.replace("/md", "")
-                md_path = self.base_dir / snap_id / "audit.md"
+            snap_name = path[len("/api/snapshot/"):].strip("/")
+            artifact = None
+            for suffix in ("/md", "/html"):
+                if snap_name.endswith(suffix):
+                    snap_name, artifact = snap_name[: -len(suffix)], suffix[1:]
+                    break
+            snap_dir = self.snapshot_dir(snap_name)
+            if snap_dir is None:
+                self.send_json_response({"error": "Invalid snapshot name"}, status=400)
+                return
+            if artifact == "md":
+                md_path = snap_dir / "audit.md"
                 if md_path.exists():
                     with open(md_path, "r", encoding="utf-8") as f:
                         content = f.read()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/markdown; charset=utf-8")
-                    self.send_header("Content-Disposition", f"attachment; filename=audit-{snap_id}.md")
+                    self.send_header("Content-Disposition", f"attachment; filename=audit-{snap_dir.name}.md")
                     self.end_headers()
                     self.wfile.write(content.encode("utf-8"))
                     return
                 self.send_response(404)
                 self.end_headers()
                 return
-            elif "/html" in snap_name:
-                snap_id = snap_name.replace("/html", "")
-                h_path = self.base_dir / snap_id / "audit.html"
+            elif artifact == "html":
+                h_path = snap_dir / "audit.html"
                 if h_path.exists():
                     with open(h_path, "r", encoding="utf-8") as f:
                         content = f.read()
@@ -92,7 +175,7 @@ class AuditWebHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             else:
-                data = sm.load_snapshot(snap_name)
+                data = sm.load_snapshot(snap_dir)
                 if data:
                     self.send_json_response(data)
                 else:
@@ -104,8 +187,13 @@ class AuditWebHandler(BaseHTTPRequestHandler):
             if not snap_a or not snap_b:
                 self.send_json_response({"error": "Missing 'a' or 'b' query parameters"}, status=400)
                 return
-            data_a = sm.load_snapshot(snap_a)
-            data_b = sm.load_snapshot(snap_b)
+            dir_a = self.snapshot_dir(snap_a)
+            dir_b = self.snapshot_dir(snap_b)
+            if dir_a is None or dir_b is None:
+                self.send_json_response({"error": "Invalid snapshot name"}, status=400)
+                return
+            data_a = sm.load_snapshot(dir_a)
+            data_b = sm.load_snapshot(dir_b)
             if not data_a or not data_b:
                 self.send_json_response({"error": "One or both snapshots could not be loaded"}, status=404)
                 return
@@ -122,7 +210,13 @@ class AuditWebHandler(BaseHTTPRequestHandler):
             self.send_html_response("<h1>404 Not Found</h1>", status=404)
 
     def do_POST(self) -> None:
+        if not self.is_host_allowed():
+            self.send_json_response({"error": "Host not allowed"}, status=403)
+            return
         if self.path == "/api/audit/run":
+            if not self.is_trusted_request():
+                self.send_json_response({"error": "Cross-site request rejected"}, status=403)
+                return
             if AuditWebHandler.is_auditing:
                 self.send_json_response({"status": "busy", "message": "Audit is already in progress"}, status=409)
                 return
@@ -335,9 +429,21 @@ class AuditWebHandler(BaseHTTPRequestHandler):
 """
 
 
-def run_web_server(host: str = "127.0.0.1", port: int = 8080, base_dir: str = "audits") -> None:
-    """Launches the self-hosted audit dashboard server."""
+def run_web_server(
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    base_dir: str = "audits",
+    allowed_hosts: Iterable[str] = (),
+) -> None:
+    """Launches the self-hosted audit dashboard server.
+
+    ``allowed_hosts`` lists extra Host header names to accept besides loopback, for use
+    behind a reverse proxy that forwards the original Host header.
+    """
     AuditWebHandler.base_dir = Path(base_dir)
+    AuditWebHandler.allowed_hosts = frozenset(
+        h for h in (urlsplit(f"//{a.strip()}").hostname for a in allowed_hosts if a.strip()) if h
+    )
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, AuditWebHandler)
     print("======================================================================")
