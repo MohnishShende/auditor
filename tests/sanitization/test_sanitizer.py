@@ -236,3 +236,18 @@ def test_authorization_header_value_is_fully_redacted(header):
     out = Sanitizer().sanitize(f"GET / HTTP/1.1 {header}\nHost: x")
     name = header.split(":")[0]
     assert out == f"GET / HTTP/1.1 {name}:[REDACTED]\nHost: x"
+
+
+@pytest.mark.parametrize("hash_value", [
+    "$6$saltsalt$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN",
+    "$5$saltsalt$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.",
+    "$y$j9T$F5Jx5fExrKuPp53xLKQ..1$X3DX6M94c7o.9agCG9G317fhZg9SqC.5i5rd.RhAtQ7",
+    "$gy$j9T$F5Jx5fExrKuPp53xLKQ..1$X3DX6M94c7o.9agCG9G317fhZg9SqC.5i5rd.RhAtQ7",
+    "$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234",
+    "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG",
+])
+def test_password_hash_formats_are_redacted_in_values(hash_value):
+    sanitizer = Sanitizer()
+    assert hash_value not in sanitizer.sanitize({"note": hash_value})["note"]
+    shadow = f"root:{hash_value}:19000:0:99999:7:::"
+    assert hash_value not in sanitizer.sanitize(shadow)

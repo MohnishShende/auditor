@@ -97,7 +97,7 @@ PRIVATE_KEY_REGEX = re.compile(
     re.MULTILINE,
 )
 PASSWORD_HASH_REGEX = re.compile(
-    r"\$(1|2a|2b|2y|5|6|argon2i|argon2d|argon2id|sha512)\$[A-Za-z0-9./+=,$_\-]+"
+    r"\$(1|2a|2b|2y|5|6|y|gy|argon2i|argon2d|argon2id|sha512)\$[A-Za-z0-9./+=,$_\-]+"
 )
 URL_CREDENTIALS_REGEX = re.compile(
     r"://([^:@/]*):([^@/]+)@"
