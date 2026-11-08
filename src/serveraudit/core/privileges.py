@@ -7,6 +7,7 @@ from enum import Enum
 import os
 import shutil
 import subprocess
+import sys
 from typing import Dict, Any
 
 
@@ -43,7 +44,8 @@ class PrivilegeManager:
     def validate_sudo(self) -> bool:
         """
         In SUDO mode, validate sudo access once at startup.
-        If non-root, runs interactive `sudo -v` once.
+        If non-root: passwordless sudo is detected with `sudo -n true`; otherwise, only when
+        a terminal is attached, runs interactive `sudo -v` once.
         In USER mode, strictly does nothing and returns False.
         """
         if self.mode == AuditMode.USER:
@@ -61,9 +63,20 @@ class PrivilegeManager:
             return False
 
         try:
-            # Interactive sudo -v once at startup to authenticate and cache timestamp
-            result = subprocess.run(["sudo", "-v"], check=False)
-            self._has_sudo = (result.returncode == 0)
+            # 1. Passwordless sudo: collectors run `sudo -n <cmd>`, so probe exactly that.
+            #    (`sudo -v` is not equivalent: sudo-rs, Ubuntu's default sudo, demands
+            #    authentication for -v even with NOPASSWD, and needs a terminal to do so.)
+            probe = subprocess.run(["sudo", "-n", "true"], check=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                self._has_sudo = True
+            elif sys.stdin.isatty():
+                # 2. Password required: authenticate once, interactively, and cache the timestamp.
+                result = subprocess.run(["sudo", "-v"], check=False)
+                self._has_sudo = (result.returncode == 0)
+            else:
+                # 3. No terminal and no passwordless sudo: never prompt (would hang or fail).
+                self._has_sudo = False
         except Exception:
             self._has_sudo = False
 

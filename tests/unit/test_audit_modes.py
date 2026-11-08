@@ -297,7 +297,7 @@ def test_optional_collectors_unprivileged_probes():
 def test_sudo_mode_validation_and_lifecycle():
     """
     10. SUDO mode:
-    - executes sudo -v once for non-root users
+    - validates sudo once for non-root users (sudo -n true; interactive sudo -v only if a TTY needs a password)
     - uses sudo -n for privileged commands after validation
     - never prompts again mid-audit
     - handles expired credentials deterministically
@@ -311,7 +311,10 @@ def test_sudo_mode_validation_and_lifecycle():
                 valid = pm.validate_sudo()
                 assert valid is True
                 assert pm.has_sudo is True
-                mock_sub.assert_called_once_with(["sudo", "-v"], check=False)
+                # Passwordless sudo is probed with `sudo -n true` (what collectors use);
+                # `sudo -v` is only for password users with a terminal (see test_sudo_validation.py).
+                assert mock_sub.call_count == 1
+                assert mock_sub.call_args[0][0] == ["sudo", "-n", "true"]
 
     # 2. Privileged commands use sudo -n
     executor = CommandExecutor(pm, mode=AuditMode.SUDO)
