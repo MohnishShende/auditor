@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from ..core.normalizer import Normalizer
 from . import register_collector
@@ -19,6 +19,7 @@ class MemoryCollector(BaseCollector):
         name="memory",
         category="hardware",
         description="Collect RAM metrics, swap utilization, DIMM hardware inventory, and memory pressure",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=False,
         network_access=False,
         writes_system_state=False,
@@ -123,7 +124,9 @@ class MemoryCollector(BaseCollector):
                                 data["pressure"][f"full_{pk}"] = float(pv)
 
         # 4. DIMM hardware inventory via dmidecode
-        if executor.which("dmidecode") and executor.privileges.can_elevate:
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+        if executor.which("dmidecode") and can_elevate:
             dmi_mem = executor.run(["dmidecode", "-t", "memory"], use_sudo=True)
             if dmi_mem.success:
                 current_dimm: Dict[str, Any] = {}

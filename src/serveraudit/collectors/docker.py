@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor, CommandOutput
 from ..core.normalizer import Normalizer
 from . import register_collector
@@ -85,6 +85,7 @@ class DockerCollector(BaseCollector):
         name="docker",
         category="containers",
         description="Inspect Docker engine, containers, images, volumes, networks, compose projects, and container security",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=False,
         network_access=False,
         writes_system_state=False,
@@ -96,13 +97,16 @@ class DockerCollector(BaseCollector):
     def _exec_docker(self, executor: CommandExecutor, args: List[str], use_sudo_pref: bool = False) -> CommandOutput:
         """Executes docker command trying unprivileged first unless sudo preferred."""
         cmd = ["docker"] + args
-        if use_sudo_pref and executor.privileges.can_elevate:
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
+        if use_sudo_pref and can_elevate:
             return executor.run(cmd, use_sudo=True)
 
         res = executor.run(cmd, use_sudo=False)
-        # If unprivileged failed with permission denied, retry with sudo if available
+        # If unprivileged failed with permission denied, retry with sudo ONLY if permitted
         if not res.success and ("permission denied" in res.stderr.lower() or "got permission denied" in res.stderr.lower()):
-            if executor.privileges.can_elevate:
+            if can_elevate:
                 return executor.run(cmd, use_sudo=True)
         return res
 
@@ -137,6 +141,8 @@ class DockerCollector(BaseCollector):
             "security_findings": [],
         }
 
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
         use_sudo = False
 
         # 1. Test Connectivity / Accessibility via docker version
@@ -145,7 +151,7 @@ class DockerCollector(BaseCollector):
         if not test_res.success:
             stderr_lower = (test_res.stderr or "").lower()
             if "permission denied" in stderr_lower or "got permission denied" in stderr_lower:
-                if executor.privileges.can_elevate:
+                if can_elevate:
                     test_res = executor.run(["docker", "version", "--format", "{{json .}}"], use_sudo=True)
                     if test_res.success:
                         use_sudo = True

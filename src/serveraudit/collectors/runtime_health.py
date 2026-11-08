@@ -7,7 +7,7 @@ import os
 import re
 from typing import Any, Dict
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -18,6 +18,7 @@ class RuntimeHealthCollector(BaseCollector):
         name="runtime_health",
         category="runtime",
         description="Collect system load averages, CPU/Memory/IO pressure stall metrics, and OOM killer events",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=False,
         network_access=False,
         writes_system_state=False,
@@ -74,13 +75,16 @@ class RuntimeHealthCollector(BaseCollector):
                             m_dict[f"{prefix}_{k}"] = float(v) if v.replace(".", "", 1).isdigit() else v
                 data["psi"][metric] = m_dict
 
-        # 3. Check for OOM killer events in dmesg
-        dmesg_res = executor.run(["dmesg", "--ctime"], use_sudo=True)
-        if dmesg_res.success and dmesg_res.stdout:
-            for line in dmesg_res.stdout.splitlines():
-                if "invoked oom-killer" in line.lower() or "killed process" in line.lower() and "out of memory" in line.lower():
-                    data["oom_events_count"] += 1
-                    data["recent_oom_kills"].append(line.strip())
+        # 3. Check for OOM killer events in dmesg (privileged)
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+        if can_elevate:
+            dmesg_res = executor.run(["dmesg", "--ctime"], use_sudo=True)
+            if dmesg_res.success and dmesg_res.stdout:
+                for line in dmesg_res.stdout.splitlines():
+                    if "invoked oom-killer" in line.lower() or "killed process" in line.lower() and "out of memory" in line.lower():
+                        data["oom_events_count"] += 1
+                        data["recent_oom_kills"].append(line.strip())
 
         return CollectorResult(
             collector=self.name,

@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -19,6 +19,7 @@ class EncryptionCollector(BaseCollector):
         name="encryption",
         category="storage",
         description="Inspect LUKS / dm-crypt active mappings, cipher, key size, and crypttab configuration",
+        privilege=PrivilegeLevel.REQUIRED,
         requires_root=True,
         network_access=False,
         writes_system_state=False,

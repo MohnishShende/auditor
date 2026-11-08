@@ -81,6 +81,7 @@ class MarkdownRenderer:
         lines.append(f"- **Linux Kernel:** `{kernel_rel}` (`{arch}`)")
         lines.append(f"- **Audit Timestamp:** `{timestamp}`")
         lines.append(f"- **Audit Profile:** `{profile.upper()}`")
+        lines.append(f"- **Audit Mode:** `{meta.get('audit_mode', 'user').upper()}`")
         lines.append(f"- **Execution Duration:** `{duration:.2f}s`")
         lines.append(f"- **Privilege Status:** `{'Sudo / Root Active' if meta.get('privileges_available') else 'Unprivileged User'}`")
         lines.append("")

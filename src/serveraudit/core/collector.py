@@ -21,25 +21,42 @@ class CollectorStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class PrivilegeLevel(str, Enum):
+    """Privilege requirement level declared by a collector."""
+    NONE = "NONE"
+    OPTIONAL = "OPTIONAL"
+    REQUIRED = "REQUIRED"
+
+
 @dataclass
 class CollectorManifest:
     """Declarative behavior manifest for a collector."""
     name: str
     category: str
     description: str
-    requires_root: bool = False
+    privilege: PrivilegeLevel = PrivilegeLevel.NONE
+    requires_root: Optional[bool] = None
     network_access: bool = False
     writes_system_state: bool = False
     collects_secrets: bool = False
     commands: List[str] = field(default_factory=list)
     outputs: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Preserve historical requires_root value during transition/compatibility period
+        if self.requires_root is None:
+            self.requires_root = (self.privilege == PrivilegeLevel.REQUIRED)
+        elif self.privilege == PrivilegeLevel.NONE and self.requires_root:
+            # If instantiated legacy style with requires_root=True and default privilege
+            self.privilege = PrivilegeLevel.REQUIRED
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "category": self.category,
             "description": self.description,
-            "requires_root": self.requires_root,
+            "privilege": self.privilege.value,
+            "requires_root": bool(self.requires_root),
             "network_access": self.network_access,
             "writes_system_state": self.writes_system_state,
             "collects_secrets": self.collects_secrets,
@@ -57,10 +74,11 @@ class CollectorResult:
     duration_seconds: float = 0.0
     error: Optional[str] = None
     message: Optional[str] = None
+    skip_reason: Optional[str] = None
     raw_available: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "collector": self.collector,
             "status": self.status.value,
             "data": self.data,
@@ -69,6 +87,9 @@ class CollectorResult:
             "message": self.message,
             "raw_available": self.raw_available,
         }
+        if self.skip_reason is not None:
+            out["skip_reason"] = self.skip_reason
+        return out
 
 
 class BaseCollector(ABC):
@@ -86,7 +107,7 @@ class BaseCollector(ABC):
 
     @property
     def requires_root(self) -> bool:
-        return self.manifest.requires_root
+        return bool(self.manifest.requires_root)
 
     def run(self, executor: Any, context: Optional[Dict[str, Any]] = None) -> CollectorResult:
         """Runs the collector with execution timing and error handling."""

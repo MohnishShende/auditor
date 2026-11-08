@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from ..core.normalizer import Normalizer
 from . import register_collector
@@ -18,6 +18,7 @@ class LvmCollector(BaseCollector):
         name="lvm",
         category="storage",
         description="Collect LVM Physical Volumes, Volume Groups, and Logical Volumes with extents and mappings",
+        privilege=PrivilegeLevel.REQUIRED,
         requires_root=True,
         network_access=False,
         writes_system_state=False,

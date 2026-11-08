@@ -21,6 +21,7 @@
     "duration_seconds": { "type": "number" },
     "error": { "type": ["string", "null"] },
     "message": { "type": ["string", "null"] },
+    "skip_reason": { "type": ["string", "null"] },
     "raw_available": { "type": "boolean" }
   }
 }

@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -17,6 +17,7 @@ class SecurityCollector(BaseCollector):
         name="security",
         category="security",
         description="Inspect Linux LSMs (AppArmor/SELinux), Kernel Lockdown, ASLR, Seccomp, and sysctl hardening",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -43,8 +44,13 @@ class SecurityCollector(BaseCollector):
             "sysctl_hardening": {},
         }
 
-        # 1. AppArmor
-        if data["apparmor"]["installed"]:
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
+        # 1. AppArmor (unprivileged check via sysfs or privileged aa-status)
+        if Path("/sys/kernel/security/apparmor").exists():
+            data["apparmor"]["enabled"] = True
+        if data["apparmor"]["installed"] and can_elevate:
             aa_res = executor.run(["aa-status"], use_sudo=True)
             if aa_res.success and aa_res.stdout:
                 data["apparmor"]["enabled"] = True
@@ -54,8 +60,10 @@ class SecurityCollector(BaseCollector):
                     elif "profiles are in complain mode" in line:
                         data["apparmor"]["profiles_complain"] = int(line.split()[0])
 
-        # 2. SELinux
-        if data["selinux"]["installed"]:
+        # 2. SELinux (unprivileged check via sysfs or privileged sestatus)
+        if Path("/sys/fs/selinux").exists():
+            data["selinux"]["enabled"] = True
+        if data["selinux"]["installed"] and can_elevate:
             se_res = executor.run(["sestatus"], use_sudo=True)
             if se_res.success and se_res.stdout:
                 for line in se_res.stdout.splitlines():

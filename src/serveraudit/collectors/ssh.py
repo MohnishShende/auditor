@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -19,6 +19,7 @@ class SshCollector(BaseCollector):
         name="ssh",
         category="security",
         description="Inspect SSH server version, effective sshd -T config, host key fingerprints, and auth security",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -65,8 +66,11 @@ class SshCollector(BaseCollector):
                 for f in sorted(sshd_d.glob("*.conf")):
                     data["config_files"].append(str(f))
 
-        # 3. Effective sshd configuration via sshd -T
-        if executor.which("sshd"):
+        # 3. Effective sshd configuration via sshd -T (privileged)
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
+        if executor.which("sshd") and can_elevate:
             sshd_t = executor.run(["sshd", "-T"], use_sudo=True)
             if sshd_t.success and sshd_t.stdout:
                 data["service_active"] = True

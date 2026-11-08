@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -18,6 +18,7 @@ class SmartCollector(BaseCollector):
         name="smart",
         category="storage",
         description="Collect SMART and NVMe physical disk health, wear, temperatures, and error logs",
+        privilege=PrivilegeLevel.REQUIRED,
         requires_root=True,
         network_access=False,
         writes_system_state=False,

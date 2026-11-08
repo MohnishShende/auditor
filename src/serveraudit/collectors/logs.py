@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -17,6 +17,7 @@ class LogsCollector(BaseCollector):
         name="logs",
         category="runtime",
         description="Collect summarized journalctl errors, dmesg hardware/driver alerts, and log disk utilization",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -33,26 +34,30 @@ class LogsCollector(BaseCollector):
             "kernel_alerts": [],
         }
 
-        # 1. journalctl --disk-usage
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
+        # 1. journalctl --disk-usage (try unprivileged in USER mode, or with sudo in SUDO mode)
         if executor.which("journalctl"):
-            usage_res = executor.run(["journalctl", "--disk-usage"], use_sudo=True)
+            usage_res = executor.run(["journalctl", "--disk-usage"], use_sudo=can_elevate)
             if usage_res.success and usage_res.stdout:
                 data["journal_disk_usage"] = usage_res.stdout.strip()
 
             # 2. Query priority 3 (errors) and above for current boot (-b)
-            err_res = executor.run(["journalctl", "-p", "3", "-b", "--no-pager", "-n", "30"], use_sudo=True)
+            err_res = executor.run(["journalctl", "-p", "3", "-b", "--no-pager", "-n", "30"], use_sudo=can_elevate)
             if err_res.success and err_res.stdout:
                 lines = [l.strip() for l in err_res.stdout.splitlines() if l.strip() and not l.startswith("--")]
                 data["boot_errors_count"] = len(lines)
                 for line in lines[:15]:  # Capture top 15 recent
                     data["recent_errors"].append(line)
 
-        # 3. dmesg error and warning summary
-        dmesg_res = executor.run(["dmesg", "--level=err,crit,alert,emerg"], use_sudo=True)
-        if dmesg_res.success and dmesg_res.stdout:
-            for line in dmesg_res.stdout.splitlines()[:15]:
-                if line.strip():
-                    data["kernel_alerts"].append(line.strip())
+        # 3. dmesg error and warning summary (only if can_elevate)
+        if can_elevate:
+            dmesg_res = executor.run(["dmesg", "--level=err,crit,alert,emerg"], use_sudo=True)
+            if dmesg_res.success and dmesg_res.stdout:
+                for line in dmesg_res.stdout.splitlines()[:15]:
+                    if line.strip():
+                        data["kernel_alerts"].append(line.strip())
 
         return CollectorResult(
             collector=self.name,

@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus
+from ..core.collector import BaseCollector, CollectorManifest, CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from . import register_collector
 
@@ -17,6 +17,7 @@ class ScheduledCollector(BaseCollector):
         name="scheduled",
         category="system",
         description="Inspect system cron, /etc/cron.* directories, user crontabs, and scheduled maintenance tasks",
+        privilege=PrivilegeLevel.OPTIONAL,
         requires_root=True,
         network_access=False,
         writes_system_state=False,
@@ -45,25 +46,46 @@ class ScheduledCollector(BaseCollector):
         for cdir in cron_dirs:
             p = Path(f"/etc/{cdir}")
             if p.exists():
-                files = [f.name for f in p.iterdir() if f.is_file() and not f.name.startswith(".")]
-                data["cron_directories"][cdir] = files
+                try:
+                    files = [f.name for f in p.iterdir() if f.is_file() and not f.name.startswith(".")]
+                    data["cron_directories"][cdir] = files
+                except Exception:
+                    data["cron_directories"][cdir] = []
 
-        # 3. User crontabs in /var/spool/cron/crontabs
-        spool = Path("/var/spool/cron/crontabs")
-        if spool.exists():
-            try:
-                for ufile in spool.iterdir():
-                    if ufile.is_file():
-                        u_content = executor.read_file(ufile, use_sudo=True)
-                        lines = [l.strip() for l in (u_content or "").splitlines() if l.strip() and not l.strip().startswith("#")]
-                        if lines:
-                            data["user_crontabs"].append({
-                                "user": ufile.name,
-                                "jobs_count": len(lines),
-                                "jobs": lines,
-                            })
-            except Exception:
-                pass
+        # 3. User crontabs
+        is_user_mode = getattr(executor, "mode", None) and executor.mode.value == "user"
+        can_elevate = getattr(executor.privileges, "can_elevate", False) and not is_user_mode
+
+        if can_elevate:
+            # Sudo mode: inspect spool
+            spool = Path("/var/spool/cron/crontabs")
+            if spool.exists():
+                try:
+                    for ufile in spool.iterdir():
+                        if ufile.is_file():
+                            u_content = executor.read_file(ufile, use_sudo=True)
+                            lines = [l.strip() for l in (u_content or "").splitlines() if l.strip() and not l.strip().startswith("#")]
+                            if lines:
+                                data["user_crontabs"].append({
+                                    "user": ufile.name,
+                                    "jobs_count": len(lines),
+                                    "jobs": lines,
+                                })
+                except Exception:
+                    pass
+        else:
+            # User mode: run unprivileged crontab -l for current user
+            if executor.which("crontab"):
+                cr_res = executor.run(["crontab", "-l"], use_sudo=False)
+                if cr_res.success and cr_res.stdout:
+                    lines = [l.strip() for l in cr_res.stdout.splitlines() if l.strip() and not l.strip().startswith("#")]
+                    if lines:
+                        import getpass
+                        data["user_crontabs"].append({
+                            "user": getpass.getuser(),
+                            "jobs_count": len(lines),
+                            "jobs": lines,
+                        })
 
         return CollectorResult(
             collector=self.name,

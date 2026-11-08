@@ -6,17 +6,21 @@ from __future__ import annotations
 import argparse
 import datetime
 import getpass
+import os
 from pathlib import Path
 import platform
 import time
 from typing import Any, Dict, List, Optional
-import yaml
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 from .. import __version__, __schema_version__
 from ..collectors import get_all_collectors
-from ..core.collector import CollectorResult, CollectorStatus
+from ..core.collector import CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
-from ..core.privileges import PrivilegeManager
+from ..core.privileges import PrivilegeManager, AuditMode
 from ..core.sanitizer import Sanitizer, SanitizerConfig, SanitizationProfile
 from ..core.manifest import ManifestGenerator
 from ..core.snapshot import SnapshotManager
@@ -36,18 +40,22 @@ class AuditOrchestrator:
 
     def __init__(
         self,
+        mode: AuditMode = AuditMode.USER,
         profile: str = "private",
         output_dir: str = "audits",
         formats: Optional[List[str]] = None,
         config_file: Optional[str] = None,
         quiet: bool = False,
+        privilege_manager: Optional[PrivilegeManager] = None,
+        executor: Optional[CommandExecutor] = None,
     ) -> None:
+        self.mode = mode
         self.profile = profile
         self.output_dir = Path(output_dir)
         self.formats = formats or ["markdown", "json", "html"]
         self.quiet = quiet
-        self.privileges = PrivilegeManager()
-        self.executor = CommandExecutor(self.privileges)
+        self.privileges = privilege_manager or PrivilegeManager(mode=self.mode)
+        self.executor = executor or CommandExecutor(self.privileges, mode=self.mode)
         self.sanitizer = Sanitizer(SanitizerConfig.from_profile(self.profile))
         self.snapshot_manager = SnapshotManager(self.output_dir)
 
@@ -68,9 +76,10 @@ class AuditOrchestrator:
         self.log("======================================================================")
         self.log(f" Linux Server Audit v{__version__}")
         self.log("======================================================================")
+        self.log(f"Mode:          {self.mode.value.upper()}")
         self.log(f"Profile:       {self.profile.upper()}")
         self.log(f"Timestamp:     {timestamp_str}")
-        self.log(f"Sudo Access:   {'Available (Active)' if self.privileges.can_elevate else 'Restricted (Non-root)'}")
+        self.log(f"Sudo Access:   {'Available (Active)' if self.privileges.can_elevate else 'Restricted (Non-root / User mode)'}")
         self.log(f"Safety Mode:   STRICT (Zero State Modification)")
         self.log("----------------------------------------------------------------------")
         self.log("Collecting server state...")
@@ -81,15 +90,24 @@ class AuditOrchestrator:
         collected_data: Dict[str, Any] = {}
 
         # Shared execution context
-        context: Dict[str, Any] = {}
+        context: Dict[str, Any] = {"audit_mode": self.mode.value}
 
         # 2. Run collectors
         total_collectors = len(all_collectors)
         for idx, (name, collector) in enumerate(all_collectors.items(), start=1):
-            if collector.requires_root and not self.privileges.can_elevate:
+            priv_req = getattr(collector.manifest, "privilege", PrivilegeLevel.NONE)
+            if self.mode == AuditMode.USER and priv_req == PrivilegeLevel.REQUIRED:
+                res = CollectorResult(
+                    collector=name,
+                    status=CollectorStatus.SKIPPED,
+                    skip_reason="requires_privilege",
+                    message="Skipped in user mode (requires elevated privilege)",
+                )
+            elif priv_req == PrivilegeLevel.REQUIRED and not self.privileges.can_elevate:
                 res = CollectorResult(
                     collector=name,
                     status=CollectorStatus.PERMISSION_DENIED,
+                    skip_reason="requires_privilege",
                     message="Elevated privilege required but unavailable",
                 )
             else:
@@ -147,6 +165,7 @@ class AuditOrchestrator:
         # 5. Build Canonical Model
         total_duration = time.time() - start_time
         hostname = platform.node()
+        effective_uid = os.geteuid() if hasattr(os, "geteuid") else -1
 
         metadata = {
             "tool_name": "serveraudit",
@@ -154,8 +173,11 @@ class AuditOrchestrator:
             "timestamp": timestamp_str,
             "hostname": hostname,
             "profile": self.profile,
+            "audit_mode": self.mode.value,
             "duration_seconds": round(total_duration, 4),
             "privileges_available": self.privileges.can_elevate,
+            "effective_uid": effective_uid,
+            "effective_user": getpass.getuser(),
             "operating_user": getpass.getuser(),
         }
 
