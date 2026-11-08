@@ -93,7 +93,7 @@ def test_user_mode_euid_zero_rejected():
     from serveraudit.cli.main import main
 
     with patch("sys.argv", ["serveraudit", "audit", "--mode", "user"]):
-        with patch("os.geteuid", return_value=0):
+        with patch("os.geteuid", create=True, return_value=0):
             with patch("sys.stderr.write") as mock_err:
                 ret = main()
                 assert ret == 1
@@ -303,7 +303,7 @@ def test_sudo_mode_validation_and_lifecycle():
     - handles expired credentials deterministically
     """
     # 1. Non-root validation
-    with patch("os.geteuid", return_value=1000):
+    with patch("os.geteuid", create=True, return_value=1000):
         with patch("shutil.which", return_value="/usr/bin/sudo"):
             with patch("subprocess.run") as mock_sub:
                 mock_sub.return_value = subprocess.CompletedProcess(args=["sudo", "-v"], returncode=0)
@@ -345,7 +345,7 @@ def test_root_sudo_mode_no_unnecessary_sudo():
     """
     11. Root SUDO mode does not invoke sudo unnecessarily.
     """
-    with patch("os.geteuid", return_value=0):
+    with patch("os.geteuid", create=True, return_value=0):
         pm = PrivilegeManager(mode=AuditMode.SUDO)
         assert pm.is_root is True
         assert pm.can_elevate is True
