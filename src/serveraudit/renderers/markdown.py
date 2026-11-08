@@ -57,6 +57,18 @@ class MarkdownRenderer:
         exposure = data.get("analysis", {}).get("exposure", [])
         conflicts = data.get("analysis", {}).get("conflicts", [])
 
+        def collected(name: str) -> bool:
+            # A module absent from collectors_meta is treated as collected (legacy / partial inputs).
+            return collectors_meta.get(name, {}).get("status", "SUCCESS") == "SUCCESS"
+
+        ssh_collected = collected("ssh")
+        ssh_cfg = ssh.get("effective_config", {})
+
+        def ssh_val(key: str) -> str:
+            if not ssh_collected:
+                return "*not collected (requires `--mode sudo`)*"
+            return f"`{ssh_cfg.get(key)}`"
+
         lines: List[str] = []
 
         # Header and Server Identity
@@ -84,6 +96,13 @@ class MarkdownRenderer:
         lines.append(f"- **Audit Mode:** `{meta.get('audit_mode', 'user').upper()}`")
         lines.append(f"- **Execution Duration:** `{duration:.2f}s`")
         lines.append(f"- **Privilege Status:** `{'Sudo / Root Active' if meta.get('privileges_available') else 'Unprivileged User'}`")
+        if str(meta.get("audit_mode", "user")).lower() == "user":
+            gaps = {n: i for n, i in collectors_meta.items() if i.get("status", "SUCCESS") != "SUCCESS"}
+            lines.append(f"- **Coverage:** Reduced (user mode). {len(gaps)} module(s) not fully collected; "
+                         "`unknown` / `not collected` values mean \"could not be read without root\", not \"unset\". "
+                         "Re-run with `--mode sudo` for full coverage.")
+            for n, i in sorted(gaps.items()):
+                lines.append(f"  - `{n}` ({i.get('status')}): {i.get('message') or i.get('skip_reason') or 'not collected'}")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -114,6 +133,8 @@ class MarkdownRenderer:
         lines.append("")
         smart_ok = smart.get("overall_health_passed", True)
         smart_status_badge = "🟢 Passed" if smart_ok else "🔴 Degraded/Warning"
+        if not collected("smart"):
+            smart_status_badge = "⚪ Not collected (needs `--mode sudo`)"
 
         lines.append("| Component | Status / Overview | Details |")
         lines.append("|---|---|---|")
@@ -123,8 +144,14 @@ class MarkdownRenderer:
         lines.append(f"| **Memory (RAM)** | 🟢 Available | {Normalizer.format_bytes(mem.get('ram', {}).get('total_bytes'))} ({mem.get('ram', {}).get('percent_used', 0)}% used) |")
         lines.append(f"| **Physical Storage** | {smart_status_badge} | {len(storage.get('disks', []))} disks, SMART: {smart_status_badge} |")
         lines.append(f"| **Networking** | 🟢 Connected | {len(net.get('interfaces', []))} interfaces, Default Gateway: `{routes.get('default_gateway') or 'None'}` |")
-        lines.append(f"| **Firewall** | ℹ️ Configured | Active: `{', '.join(fw_state.get('active_frameworks', [])) or 'None / Open'}` |")
-        lines.append(f"| **SSH Security** | 🔒 Configured | Port {ssh.get('effective_config', {}).get('port', 22)} (Root: `{ssh.get('effective_config', {}).get('permit_root_login')}`, Pass: `{ssh.get('effective_config', {}).get('password_authentication')}`) |")
+        if collected("firewall"):
+            lines.append(f"| **Firewall** | ℹ️ Configured | Active: `{', '.join(fw_state.get('active_frameworks', [])) or 'None / Open'}` |")
+        else:
+            lines.append("| **Firewall** | ⚪ Not collected | Firewall state needs `--mode sudo` |")
+        if ssh_collected:
+            lines.append(f"| **SSH Security** | 🔒 Configured | Port {ssh_cfg.get('port', 22)} (Root: `{ssh_cfg.get('permit_root_login')}`, Pass: `{ssh_cfg.get('password_authentication')}`) |")
+        else:
+            lines.append("| **SSH Security** | ⚪ Not collected | Effective sshd config needs `--mode sudo` |")
         lines.append(f"| **Docker Engine** | {'🟢 Running' if docker.get('engine', {}).get('active') else '⚪ Inactive'} | {docker.get('engine', {}).get('containers_running', 0)} running / {docker.get('engine', {}).get('containers_total', 0)} total containers |")
         lines.append(f"| **Reverse Proxy** | {'🟢 Configured' if caddy.get('sites') else '⚪ None'} | {len(caddy.get('sites', []))} Caddy sites configured |")
         lines.append(f"| **Applications** | ℹ️ Discovered | {len(apps.get('applications', []))} self-hosted applications discovered |")
@@ -268,9 +295,9 @@ class MarkdownRenderer:
         lines.append("### OpenSSH Server Hardening")
         lines.append(f"- **SSH Version:** {ssh.get('client_version') or 'OpenSSH'}")
         lines.append(f"- **Listening Port:** `{ssh.get('effective_config', {}).get('port', 22)}`")
-        lines.append(f"- **PermitRootLogin:** `{ssh.get('effective_config', {}).get('permit_root_login')}`")
-        lines.append(f"- **PasswordAuthentication:** `{ssh.get('effective_config', {}).get('password_authentication')}`")
-        lines.append(f"- **PubkeyAuthentication:** `{ssh.get('effective_config', {}).get('pubkey_authentication')}`")
+        lines.append(f"- **PermitRootLogin:** {ssh_val('permit_root_login')}")
+        lines.append(f"- **PasswordAuthentication:** {ssh_val('password_authentication')}")
+        lines.append(f"- **PubkeyAuthentication:** {ssh_val('pubkey_authentication')}")
         lines.append("")
         lines.append("### Linux Security Modules & Controls")
         lines.append(f"- **AppArmor:** `{'Active (' + str(sec.get('apparmor', {}).get('profiles_enforce')) + ' enforce profiles)' if sec.get('apparmor', {}).get('enabled') else 'Disabled'}`")
