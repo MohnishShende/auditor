@@ -28,6 +28,7 @@
 - [Audit modes: `user` vs `sudo`](#-audit-modes-user-vs-sudo)
 - [Profiles: `private` vs `public`](#-profiles-private-vs-public)
 - [Command reference](#-command-reference)
+- [Configuration files](#-configuration-files)
 - [What you get: the output bundle](#-what-you-get-the-output-bundle)
 - [How to read a report](#-how-to-read-a-report)
 - [How it works](#-how-it-works)
@@ -261,7 +262,7 @@ serveraudit audit [--mode {user,sudo}] [--profile {private,public}]
 | `--profile` | `private` | `private` or `public`. See [profiles](#-profiles-private-vs-public). |
 | `--output-dir` | `audits` | Where snapshot folders are created (relative to the current directory). |
 | `--format` | `markdown,json,html` | Comma-separated: `markdown`, `json`, `html`, `pdf`. Markdown and JSON are always written. `pdf` needs WeasyPrint. |
-| `--config` | none | Accepted, but **not applied in this version** (see [limitations](#-platform-support-and-known-limitations)). |
+| `--config` | none | A [configuration file](#-configuration-files). Command-line flags override it. |
 | `-q`, `--quiet` | off | Minimal terminal output. Warnings still print. |
 
 ### `list`: show saved snapshots
@@ -301,6 +302,37 @@ serveraudit web [--host 127.0.0.1] [--port 8080] [--output-dir DIR] [--allowed-h
 ```
 
 See [web dashboard](#-web-dashboard).
+
+---
+
+## 🧩 Configuration files
+
+Instead of repeating flags, put them in a YAML file and pass `--config`:
+
+```bash
+serveraudit audit --mode sudo --config config/public.yaml
+```
+
+Three ready-made files are in [`config/`](config/): `default.yaml` (annotated, every option shown), `private.yaml` and `public.yaml`. Copy one and edit it. Every key is optional.
+
+```yaml
+profile: public                # private | public
+output:
+  directory: /srv/audits       # where snapshot folders go
+  formats: [markdown, json, html]
+collectors:
+  # enabled: [system, cpu, memory, storage]   # run ONLY these (omit to run everything)
+  disabled: [docker, caddy]    # skip these; they show as SKIPPED "Disabled by configuration"
+sanitization:
+  mask_hostname: true          # mask_ips, mask_macs, mask_serials, mask_uuids, mask_hostname
+```
+
+**Rules**
+
+- **Precedence:** command-line flag > config file > built-in default. `--profile private` beats `profile: public` in the file, but the file's `sanitization` section still applies on top of whatever profile is used.
+- **Mistakes are errors, not silent no-ops.** A typo (`mask_hostnam`), an unknown collector name, or a bad value stops the run with a clear message and exit code `2`, before any sudo prompt.
+- **Secret redaction cannot be disabled.** `redact_passwords`, `redact_tokens`, `redact_private_keys` and `redact_env_secrets` may be set to `true`, never `false`.
+- **Not supported yet:** `execution.*` (timeouts, parallelism, `allow_sudo`) and `network.allow_outbound: true`. A file that sets them still runs, with a warning naming each ignored setting.
 
 ---
 
@@ -636,7 +668,7 @@ Honest status, so nothing surprises you:
 | **macOS** | **Not supported.** It runs, but there is no `/proc` and no `ip`, `lsblk`, `lspci`, `systemctl`, so most modules report nothing. Auditor prints a warning and the report header says `Platform Support: Unsupported`. Unit tests run on macOS in CI. Real audits do not. |
 | **Windows** | Not supported. CI does not run on Windows. |
 | **Other Linux distributions** | The audit runs. The package inventory is Debian-family only. |
-| `--config FILE` and the files in `config/` | **Accepted but not applied** in this version. Use `--profile`, `--format` and `--output-dir`. The YAML files are reference templates for planned work. |
+| **Configuration files** | Apply the profile, output directory, formats, which collectors run, and the `mask_*` options. Timeouts, parallelism and network settings are not supported yet (a warning is printed if a file sets them). |
 | **Public profile** | Masks secrets, the hostname, IPs, MACs and serials, but not usernames, container or application names, domain names or other machines' names. See [profiles](#-profiles-private-vs-public). |
 | **PDF output** | Needs WeasyPrint. Requested via `audit --format ...pdf` without it, the PDF is skipped silently. |
 | **Restricted sudo rules** | Sudo rules that allow only specific commands (instead of `ALL`) are not recognized by the passwordless check. In a terminal you are asked for a password. Without one, the audit runs unprivileged and says so. |
@@ -727,7 +759,7 @@ src/serveraudit/
 ├── applications/ # known-application detection
 └── web/          # self-hosted dashboard
 schemas/          # JSON schemas for audit.json, manifest.json, collectors
-config/           # reference profile templates (not yet applied, see limitations)
+config/           # ready-to-use configuration files (default, private, public)
 docs/             # architecture, security model, collectors, web interface
 examples/         # a full synthetic report
 tests/            # unit and sanitization tests

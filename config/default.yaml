@@ -1,89 +1,44 @@
-# Linux Server Audit Default Configuration
+# Auditor default configuration. Use it with:  serveraudit audit --config config/default.yaml
+#
+# Precedence: command-line flags > this file > built-in defaults.
+# Every key is optional. Typos, unknown collector names and redact_* = false are rejected.
+
 version: "1.0"
 
-# Audit Profile (private or public)
+# private (default) keeps hostnames, IPs, MACs and serials; public masks them. Secrets are always redacted.
 profile: "private"
 
-# Output settings
 output:
-  directory: "audits"
-  formats:
+  directory: "audits"        # where snapshot folders are created
+  formats:                   # markdown and json are always written; html and pdf are optional
     - "markdown"
     - "json"
-  generate_checksums: true
-  generate_manifest: true
+    - "html"
 
-# Execution settings
-execution:
-  timeout_seconds: 30
-  parallel_collectors: true
-  max_workers: 4
-  allow_sudo: true
-
-# Network policy (strictly offline by default)
-network:
-  allow_outbound: false
-
-# Collector enablement
 collectors:
-  enabled:
-    - system
-    - hardware
-    - firmware
-    - cpu
-    - memory
-    - pci
-    - usb
-    - storage
-    - smart
-    - filesystems
-    - fstab
-    - lvm
-    - raid
-    - zfs
-    - btrfs
-    - encryption
-    - network
-    - routes
-    - dns
-    - ports
-    - active_net
-    - firewall
-    - fail2ban
-    - ssh
-    - users
-    - security
-    - systemd
-    - processes
-    - runtime_health
-    - packages
-    - docker
-    - containers
-    - images
-    - volumes
-    - networks
-    - compose
-    - container_security
-    - caddy
-    - tls
-    - applications
-    - scheduled
-    - backups
-    - logs
-    - thermal
-    - power
-    - boot
-    - time
-    - sharing
-    - permissions
-  disabled: []
+  # Leave "enabled" out (or empty) to run every collector. List names to run ONLY those.
+  # enabled: [system, cpu, memory, storage]
+  disabled: []               # collectors to skip (they appear as SKIPPED: "Disabled by configuration")
+  # Available collectors:
+#   active_net, applications, backups, boot, btrfs, caddy, cpu, dns, docker, encryption,
+#   fail2ban, filesystems, firewall, firmware, fstab, hardware, logs, lvm, memory, network,
+#   packages, pci, permissions, ports, power, processes, raid, routes, runtime_health,
+#   scheduled, security, sharing, smart, ssh, storage, system, systemd, thermal, time, tls,
+#   usb, users, zfs
 
-# Sanitization settings
 sanitization:
+  # Secret redaction is always on; redact_* can only be confirmed here, never switched off.
   redact_passwords: true
   redact_tokens: true
   redact_private_keys: true
   redact_env_secrets: true
+  # Identity masking (the public profile turns all of these on):
   mask_ips: false
   mask_macs: false
   mask_serials: false
+  mask_uuids: false
+  mask_hostname: false
+
+# Not supported yet (no engine behind them, so a config that sets them gets a warning):
+#   execution.timeout_seconds, execution.parallel_collectors, execution.max_workers,
+#   execution.allow_sudo, network.allow_outbound

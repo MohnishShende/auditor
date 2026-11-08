@@ -1,4 +1,5 @@
-# Linux Server Audit - Private Profile
+# Auditor - private profile. Use with:  serveraudit audit --config config/private.yaml
+# (command-line flags override this file)
 # Intended for server owners: preserves internal IPs, MACs, and hardware IDs while redacting credentials.
 version: "1.0"
 profile: "private"
@@ -11,14 +12,6 @@ output:
     - "html"
   generate_checksums: true
   generate_manifest: true
-
-execution:
-  timeout_seconds: 30
-  parallel_collectors: true
-  allow_sudo: true
-
-network:
-  allow_outbound: false
 
 sanitization:
   redact_passwords: true

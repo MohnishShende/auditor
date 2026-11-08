@@ -22,6 +22,7 @@ from ..collectors import get_all_collectors
 from ..core.collector import CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from ..core.privileges import PrivilegeManager, AuditMode
+from ..core.config import AuditConfig
 from ..core.sanitizer import GENERIC_HOSTNAMES, Sanitizer, SanitizerConfig, SanitizationProfile
 from ..core.manifest import ManifestGenerator
 from ..core.snapshot import SnapshotManager
@@ -65,7 +66,7 @@ class AuditOrchestrator:
         profile: str = "private",
         output_dir: str = "audits",
         formats: Optional[List[str]] = None,
-        config_file: Optional[str] = None,
+        audit_config: Optional[AuditConfig] = None,
         quiet: bool = False,
         privilege_manager: Optional[PrivilegeManager] = None,
         executor: Optional[CommandExecutor] = None,
@@ -77,7 +78,11 @@ class AuditOrchestrator:
         self.quiet = quiet
         self.privileges = privilege_manager or PrivilegeManager(mode=self.mode)
         self.executor = executor or CommandExecutor(self.privileges, mode=self.mode)
-        self.sanitizer = Sanitizer(SanitizerConfig.from_profile(self.profile))
+        self.audit_config = audit_config or AuditConfig()
+        sanitizer_config = SanitizerConfig.from_profile(self.profile)
+        for option, value in self.audit_config.sanitization.items():
+            setattr(sanitizer_config, option, value)
+        self.sanitizer = Sanitizer(sanitizer_config)
         self.snapshot_manager = SnapshotManager(self.output_dir)
 
     def log(self, message: str) -> None:
@@ -121,7 +126,15 @@ class AuditOrchestrator:
         total_collectors = len(all_collectors)
         for idx, (name, collector) in enumerate(all_collectors.items(), start=1):
             priv_req = getattr(collector.manifest, "privilege", PrivilegeLevel.NONE)
-            if self.mode == AuditMode.USER and priv_req == PrivilegeLevel.REQUIRED:
+            cfg = self.audit_config
+            if name in cfg.disabled or (cfg.enabled and name not in cfg.enabled):
+                res = CollectorResult(
+                    collector=name,
+                    status=CollectorStatus.SKIPPED,
+                    skip_reason="disabled_by_config",
+                    message="Disabled by configuration",
+                )
+            elif self.mode == AuditMode.USER and priv_req == PrivilegeLevel.REQUIRED:
                 res = CollectorResult(
                     collector=name,
                     status=CollectorStatus.SKIPPED,
