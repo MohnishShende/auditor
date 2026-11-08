@@ -36,6 +36,9 @@ from ..analysis import evaluate_health, evaluate_exposure, detect_conflicts
 from ..renderers import MarkdownRenderer, JsonRenderer, HtmlRenderer, PdfRenderer
 
 
+KNOWN_FORMATS = frozenset({"markdown", "json", "html", "pdf"})
+
+
 def hostnames_to_mask(node: str) -> "set[str]":
     """Names to scrub from a public report: the full node name and its short form."""
     node = (node or "").strip()
@@ -268,7 +271,20 @@ class AuditOrchestrator:
         self.log("Rendering report artifacts...")
         audit_md = MarkdownRenderer.render(sanitized_data)
         audit_html = HtmlRenderer.render(sanitized_data) if "html" in self.formats else None
-        audit_pdf = PdfRenderer.render(sanitized_data) if "pdf" in self.formats and PdfRenderer.is_available() else None
+        audit_pdf = None
+        if "pdf" in self.formats:
+            if not PdfRenderer.is_available():
+                sys.stderr.write("Warning: PDF output requested but WeasyPrint is not installed "
+                                 "(pip install -e \".[pdf]\"); skipping audit.pdf.\n")
+            else:
+                audit_pdf = PdfRenderer.render(sanitized_data)
+                if not audit_pdf:
+                    sys.stderr.write("Warning: PDF output requested but WeasyPrint failed to render it "
+                                     "(it may be missing system libraries such as Pango); skipping audit.pdf.\n")
+        unknown = sorted(set(self.formats) - KNOWN_FORMATS)
+        if unknown:
+            sys.stderr.write(f"Warning: ignoring unknown output format(s): {', '.join(unknown)} "
+                             f"(choose from {', '.join(sorted(KNOWN_FORMATS))}).\n")
 
         # 8. Manifest & Integrity
         manifest = self.sanitizer.sanitize(ManifestGenerator.generate(
