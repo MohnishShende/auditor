@@ -21,6 +21,19 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
+def resolve_audit_settings(profile_arg, output_dir_arg, format_arg, cfg):
+    """Command-line flag > config file > built-in default. Returns (profile, output_dir, formats)."""
+    profile = profile_arg or (cfg.profile if cfg else None) or "private"
+    output_dir = output_dir_arg or (cfg.output_dir if cfg else None) or "audits"
+    if format_arg:
+        formats = [f.strip() for f in format_arg.split(",") if f.strip()]
+    elif cfg and cfg.formats:
+        formats = list(cfg.formats)
+    else:
+        formats = ["markdown", "json", "html"]
+    return profile, output_dir, formats
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="serveraudit",
@@ -38,10 +51,10 @@ def main() -> int:
         default=None,
         help="Audit execution mode: 'user' (unprivileged, zero sudo) or 'sudo' (elevated checks)",
     )
-    audit_parser.add_argument("--profile", choices=["private", "public"], default="private", help="Audit profile (default: private)")
-    audit_parser.add_argument("--output-dir", default="audits", help="Directory to store audit bundles (default: audits)")
-    audit_parser.add_argument("--format", default="markdown,json,html", help="Comma-separated formats: markdown,json,html,pdf")
-    audit_parser.add_argument("--config", default=None, help="Custom configuration YAML file")
+    audit_parser.add_argument("--profile", choices=["private", "public"], default=None, help="Audit profile (default: private, or the config file's)")
+    audit_parser.add_argument("--output-dir", default=None, help="Directory to store audit bundles (default: audits, or the config file's)")
+    audit_parser.add_argument("--format", default=None, help="Comma-separated formats: markdown,json,html,pdf (default: markdown,json,html, or the config file's)")
+    audit_parser.add_argument("--config", default=None, help="Configuration YAML file (see config/); command-line flags override it")
     audit_parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode (minimal terminal output)")
 
     # Command: diff
@@ -84,6 +97,22 @@ def main() -> int:
         from ..core.privileges import AuditMode, PrivilegeManager
         from ..core.executor import CommandExecutor
         import os
+
+        # 0. Load the config file first: a bad file must fail before any sudo prompt.
+        audit_cfg = None
+        config_path = getattr(args, "config", None)
+        if config_path:
+            from ..collectors import get_all_collectors
+            from ..core.config import ConfigError, load_config, validate_collector_names
+            try:
+                audit_cfg = load_config(config_path)
+                validate_collector_names(audit_cfg, set(get_all_collectors()))
+            except ConfigError as exc:
+                sys.stderr.write(f"Error: {exc}\n")
+                return 2
+            if audit_cfg.ignored:
+                sys.stderr.write("Warning: config: ignoring setting(s) that are not supported yet: "
+                                 + ", ".join(audit_cfg.ignored) + "\n")
 
         # 1. Determine AuditMode
         raw_mode = getattr(args, "mode", None)
@@ -132,11 +161,8 @@ def main() -> int:
         executor = CommandExecutor(privilege_manager=priv_mgr, mode=selected_mode)
 
         # 6. Run orchestrator
-        profile = getattr(args, "profile", "private")
-        output_dir = getattr(args, "output_dir", "audits")
-        format_arg = getattr(args, "format", "markdown,json,html")
-        formats = [f.strip() for f in format_arg.split(",") if f.strip()]
-        config_file = getattr(args, "config", None)
+        profile, output_dir, formats = resolve_audit_settings(
+            getattr(args, "profile", None), getattr(args, "output_dir", None), getattr(args, "format", None), audit_cfg)
         quiet = getattr(args, "quiet", False)
 
         orchestrator = AuditOrchestrator(
@@ -144,7 +170,7 @@ def main() -> int:
             profile=profile,
             output_dir=output_dir,
             formats=formats,
-            config_file=config_file,
+            audit_config=audit_cfg,
             quiet=quiet,
             privilege_manager=priv_mgr,
             executor=executor,

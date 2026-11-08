@@ -1,4 +1,5 @@
-# Linux Server Audit - Public / Shareable Profile
+# Auditor - public / shareable profile. Use with:  serveraudit audit --config config/public.yaml
+# (command-line flags override this file)
 # Intended for sharing in GitHub issues, forums, and support.
 # Removes secrets AND masks internal IPs, MACs, device serials, and machine identifiers.
 version: "1.0"
@@ -11,14 +12,6 @@ output:
     - "json"
   generate_checksums: true
   generate_manifest: true
-
-execution:
-  timeout_seconds: 30
-  parallel_collectors: true
-  allow_sudo: true
-
-network:
-  allow_outbound: false
 
 sanitization:
   redact_passwords: true
