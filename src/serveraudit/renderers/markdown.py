@@ -96,11 +96,16 @@ class MarkdownRenderer:
         lines.append(f"- **Audit Mode:** `{meta.get('audit_mode', 'user').upper()}`")
         lines.append(f"- **Execution Duration:** `{duration:.2f}s`")
         lines.append(f"- **Privilege Status:** `{'Sudo / Root Active' if meta.get('privileges_available') else 'Unprivileged User'}`")
-        if str(meta.get("audit_mode", "user")).lower() == "user":
+        user_mode = str(meta.get("audit_mode", "user")).lower() == "user"
+        if user_mode or not meta.get("privileges_available"):
+            # Also covers --mode sudo where `sudo -v` failed or was cancelled: the run continues
+            # without elevation, so the mode label alone says nothing about coverage.
             gaps = {n: i for n, i in collectors_meta.items() if i.get("status", "SUCCESS") != "SUCCESS"}
-            lines.append(f"- **Coverage:** Reduced (user mode). {len(gaps)} module(s) not fully collected; "
+            why = "user mode" if user_mode else "sudo mode, but sudo validation failed or was cancelled"
+            fix = "Re-run with `--mode sudo`" if user_mode else "Re-run `--mode sudo` from a terminal where sudo works"
+            lines.append(f"- **Coverage:** Reduced ({why}). {len(gaps)} module(s) not fully collected; "
                          "`unknown` / `not collected` values mean \"could not be read without root\", not \"unset\". "
-                         "Re-run with `--mode sudo` for full coverage.")
+                         f"{fix} for full coverage.")
             for n, i in sorted(gaps.items()):
                 lines.append(f"  - `{n}` ({i.get('status')}): {i.get('message') or i.get('skip_reason') or 'not collected'}")
         lines.append("")

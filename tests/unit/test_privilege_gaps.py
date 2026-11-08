@@ -98,3 +98,15 @@ def test_sudo_mode_report_is_unchanged():
     assert "**PermitRootLogin:** `no`" in md
     assert NOT_COLLECTED not in md.lower()
     assert "Coverage" not in md.split("## 📑 Table of Contents")[0]
+
+
+def test_failed_sudo_in_sudo_mode_still_gets_coverage_block():
+    """--mode sudo whose `sudo -v` failed/was cancelled runs without elevation (main.py warns
+    and continues); the report must not look like a full audit just because the mode says SUDO."""
+    report = _report("sudo", "PARTIAL", UNKNOWN, privileged=False)
+    report["collectors"]["firewall"]["status"] = "SKIPPED"
+    md = MarkdownRenderer.render(report)
+    header = md.split("## 📑 Table of Contents")[0]
+    assert "Coverage" in header
+    assert "`ssh`" in header and "`firewall`" in header
+    assert "sudo" in header.split("Coverage")[1].lower()
