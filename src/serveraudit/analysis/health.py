@@ -6,6 +6,16 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+# Kernel pseudo-filesystems expose a tiny fixed "capacity" (efivarfs is a few KB and is
+# normally ~95% full) that says nothing about disk space. tmpfs, devtmpfs and overlay are
+# deliberately NOT listed: a full /run, /dev/shm or container layer is a real problem.
+PSEUDO_FILESYSTEMS = frozenset({
+    "efivarfs", "sysfs", "proc", "cgroup", "cgroup2", "securityfs", "debugfs", "tracefs",
+    "configfs", "fusectl", "pstore", "bpf", "binfmt_misc", "autofs", "mqueue", "devpts",
+    "selinuxfs", "rpc_pipefs", "nsfs", "hugetlbfs",
+})
+
+
 def evaluate_health(audit_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Evaluates deterministic health checks based purely on collected evidence."""
     findings: List[Dict[str, Any]] = []
@@ -41,6 +51,8 @@ def evaluate_health(audit_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     fs_data = audit_data.get("filesystems", {})
     if isinstance(fs_data, dict):
         for mount in fs_data.get("mounts", []):
+            if mount.get("fstype") in PSEUDO_FILESYSTEMS:
+                continue
             pct = mount.get("percent_used", 0)
             target = mount.get("target")
             if pct >= 95:
