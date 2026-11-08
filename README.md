@@ -321,7 +321,7 @@ audits/
 - A complete synthetic example is in [`examples/audit.md`](examples/audit.md) and [`examples/audit.json`](examples/audit.json).
 - Snapshots never overwrite each other. Each run is a new folder.
 
-> **PDF note:** if you ask for `pdf` and WeasyPrint is not installed, the PDF is skipped and the audit still succeeds. `serveraudit render --format pdf` tells you plainly when WeasyPrint is missing.
+> **PDF note:** if you ask for `pdf` and WeasyPrint is not installed (or cannot render), Auditor prints a warning, skips the PDF, and the audit still succeeds. Unknown format names are reported the same way.
 
 ---
 
@@ -638,7 +638,7 @@ Honest status, so nothing surprises you:
 | **Other Linux distributions** | The audit runs. The package inventory is Debian-family only. |
 | `--config FILE` and the files in `config/` | **Accepted but not applied** in this version. Use `--profile`, `--format` and `--output-dir`. The YAML files are reference templates for planned work. |
 | **Public profile** | Masks secrets, the hostname, IPs, MACs and serials, but not usernames, container or application names, domain names or other machines' names. See [profiles](#-profiles-private-vs-public). |
-| **PDF output** | Needs WeasyPrint. Requested via `audit --format ...pdf` without it, the PDF is skipped silently. |
+| **PDF output** | Needs WeasyPrint (`pip install -e ".[pdf]"`). Without it the PDF is skipped with a warning. |
 | **Restricted sudo rules** | Sudo rules that allow only specific commands (instead of `ALL`) are not recognized by the passwordless check. In a terminal you are asked for a password. Without one, the audit runs unprivileged and says so. |
 | **Very long audits** | With password sudo, the credential timestamp can expire during a very long run. Audits normally take seconds. |
 
