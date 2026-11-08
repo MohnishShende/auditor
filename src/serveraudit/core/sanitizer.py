@@ -5,6 +5,7 @@ Supports 'private' and 'public' (shareable) profiles.
 
 from __future__ import annotations
 from dataclasses import dataclass
+import ipaddress
 from enum import Enum
 import re
 from typing import Any, Dict, List, Optional, Pattern, Set, Union
@@ -120,6 +121,28 @@ AUTHORIZATION_HEADER_REGEX = re.compile(
     r"""(?i)\b([A-Za-z_-]*authorization)\s*([:=])\s*[^\r\n"']+"""
 )
 
+# Hostnames that identify nothing and are never masked.
+GENERIC_HOSTNAMES = frozenset({"localhost", "localhost.localdomain"})
+HOSTNAME_PLACEHOLDER = "[REDACTED_HOST]"
+
+# IPv6 candidates: colon-separated hex groups. Each candidate is validated with
+# `ipaddress`, so times ("10:17:00"), ratios ("3:1") and "a::b::c" are left alone.
+IPV6_CANDIDATE_REGEX = re.compile(
+    r"(?<![0-9A-Za-z:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Za-z:]|\.\d)"
+)
+
+
+def _mask_ipv6(match: "re.Match[str]") -> str:
+    token = match.group(0)
+    try:
+        addr = ipaddress.IPv6Address(token)
+    except ValueError:
+        return token
+    if addr.is_loopback or addr.is_unspecified:
+        return token  # ::1 and :: identify nothing
+    return addr.exploded.split(":")[0] + ":x:x:x:x:x:x:x"
+
+
 # MAC address pattern
 MAC_REGEX = re.compile(r"\b([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})\b")
 
@@ -181,6 +204,20 @@ class Sanitizer:
 
     def __init__(self, config: Optional[SanitizerConfig] = None) -> None:
         self.config = config or SanitizerConfig()
+        self._hostname_regex_key: Optional[frozenset] = None
+        self._hostname_regex: Optional[Pattern[str]] = None
+
+    def _mask_hostnames(self, text: str) -> str:
+        """Replaces every known hostname (case-insensitive, any non-alphanumeric boundary)."""
+        names = frozenset(n for n in (self.config.known_hostnames or ())
+                          if n and n.lower() not in GENERIC_HOSTNAMES)
+        if not names:
+            return text
+        if names != self._hostname_regex_key:
+            alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+            self._hostname_regex = re.compile(rf"(?<![A-Za-z0-9])(?:{alternation})(?![A-Za-z0-9])", re.IGNORECASE)
+            self._hostname_regex_key = names
+        return self._hostname_regex.sub(HOSTNAME_PLACEHOLDER, text)
 
     def is_secret_key(self, key_name: str) -> bool:
         """Determines if a configuration or environment key name implies secret content."""
@@ -248,6 +285,11 @@ class Sanitizer:
             # Mask trailing octets of private subnet
             text = re.sub(r"\b(192\.168\.)\d{1,3}\.\d{1,3}\b", r"\1x.x", text)
             text = re.sub(r"\b(10\.)\d{1,3}\.\d{1,3}\.\d{1,3}\b", r"\1x.x.x", text)
+            text = re.sub(r"\b(172\.(?:1[6-9]|2\d|3[01])\.)\d{1,3}\.\d{1,3}\b", r"\1x.x", text)
+            text = IPV6_CANDIDATE_REGEX.sub(_mask_ipv6, text)
+
+        if self.config.mask_hostname:
+            text = self._mask_hostnames(text)
 
         return text
 

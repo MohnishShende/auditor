@@ -22,7 +22,7 @@ from ..collectors import get_all_collectors
 from ..core.collector import CollectorResult, CollectorStatus, PrivilegeLevel
 from ..core.executor import CommandExecutor
 from ..core.privileges import PrivilegeManager, AuditMode
-from ..core.sanitizer import Sanitizer, SanitizerConfig, SanitizationProfile
+from ..core.sanitizer import GENERIC_HOSTNAMES, Sanitizer, SanitizerConfig, SanitizationProfile
 from ..core.manifest import ManifestGenerator
 from ..core.snapshot import SnapshotManager
 from ..core.normalizer import Normalizer
@@ -34,6 +34,18 @@ from ..topology import (
 )
 from ..analysis import evaluate_health, evaluate_exposure, detect_conflicts
 from ..renderers import MarkdownRenderer, JsonRenderer, HtmlRenderer, PdfRenderer
+
+
+def hostnames_to_mask(node: str) -> "set[str]":
+    """Names to scrub from a public report: the full node name and its short form."""
+    node = (node or "").strip()
+    if not node or node.lower() in GENERIC_HOSTNAMES:
+        return set()
+    names = {node}
+    short = node.split(".")[0]
+    if short and short.lower() not in GENERIC_HOSTNAMES:
+        names.add(short)
+    return names
 
 
 def unsupported_platform_message(system: str) -> Optional[str]:
@@ -248,6 +260,8 @@ class AuditOrchestrator:
 
         # 6. Apply Sanitization
         self.log(f"Applying typed sanitization ({self.profile} profile)...")
+        if self.sanitizer.config.mask_hostname:
+            self.sanitizer.config.known_hostnames = hostnames_to_mask(hostname)
         sanitized_data = self.sanitizer.sanitize(canonical_data)
 
         # 7. Render formats
@@ -257,17 +271,19 @@ class AuditOrchestrator:
         audit_pdf = PdfRenderer.render(sanitized_data) if "pdf" in self.formats and PdfRenderer.is_available() else None
 
         # 8. Manifest & Integrity
-        manifest = ManifestGenerator.generate(
+        manifest = self.sanitizer.sanitize(ManifestGenerator.generate(
             hostname=hostname,
             profile=self.profile,
             duration_seconds=total_duration,
             results=collector_results,
             privileges_available=self.privileges.can_elevate,
             extra_metadata={"timestamp": timestamp_str},
-        )
+        ))
 
         # 9. Save bundle
-        snapshot_dir = self.snapshot_manager.create_snapshot_dir(hostname, timestamp_str)
+        # The folder name must not leak the hostname in a public bundle either.
+        dir_host = "host" if self.sanitizer.config.mask_hostname else hostname
+        snapshot_dir = self.snapshot_manager.create_snapshot_dir(dir_host, timestamp_str)
         checksums = self.snapshot_manager.save_bundle(
             snapshot_dir=snapshot_dir,
             audit_json=sanitized_data,
