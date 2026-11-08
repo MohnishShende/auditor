@@ -69,6 +69,14 @@ def main() -> int:
     web_parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     web_parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
     web_parser.add_argument("--output-dir", default="audits", help="Base directory of snapshots")
+    web_parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="HOSTNAME",
+        help="Accept this Host header besides loopback (repeatable); for a reverse proxy that "
+             "forwards the original Host header. Forwarding headers are never trusted.",
+    )
 
     # Default to 'audit' if no arguments provided
     args = parser.parse_args()
@@ -182,7 +190,7 @@ def main() -> int:
 
     elif args.command == "web":
         from ..web.app import run_web_server
-        run_web_server(host=args.host, port=args.port, base_dir=args.output_dir)
+        run_web_server(host=args.host, port=args.port, base_dir=args.output_dir, allowed_hosts=args.allowed_host)
         return 0
 
     return 0

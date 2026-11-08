@@ -6,6 +6,7 @@ Operates unprivileged, allowing audit triggering, report browsing, and drift com
 from __future__ import annotations
 import html
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ import platform
 import re
 import threading
 import time
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import parse_qs, urlparse, urlsplit
 
 from .. import __version__
@@ -25,7 +26,7 @@ from ..analysis.drift import compare_snapshots
 # A snapshot identifier is "<hostname>-<timestamp>" as created by SnapshotManager:
 # plain characters only, never a path.
 SNAPSHOT_NAME_REGEX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
-LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 class AuditWebHandler(BaseHTTPRequestHandler):
@@ -34,6 +35,8 @@ class AuditWebHandler(BaseHTTPRequestHandler):
     base_dir: Path = Path("audits")
     is_auditing: bool = False
     last_audit_message: str = ""
+    # Extra Host header names accepted besides loopback (explicit opt-in, --allowed-host).
+    allowed_hosts: frozenset = frozenset()
 
     def log_message(self, format: str, *args: Any) -> None:
         # Suppress noisy standard request logging
@@ -70,29 +73,43 @@ class AuditWebHandler(BaseHTTPRequestHandler):
             return None
         return target
 
+    def is_host_allowed(self) -> bool:
+        """Checks the Host header of EVERY request (GET and POST) against an allow-list.
+
+        Defeats DNS rebinding: a rebound page is same-origin with the server from the
+        browser's point of view, so Origin / Sec-Fetch-Site look legitimate and it can
+        set arbitrary headers without a CORS preflight; only the Host it must send
+        (the attacker's name) gives it away. Forwarding headers (X-Forwarded-*,
+        Forwarded) are never trusted here, since the client can set them.
+
+        Enforced when the server is bound to a loopback address, or whenever
+        ``allowed_hosts`` is configured. A reverse proxy must forward the original
+        Host header (Caddy and nginx ``proxy_set_header Host $host`` do) and its
+        public name must be listed with ``--allowed-host``.
+        """
+        if not (self._bound_to_loopback() or self.allowed_hosts):
+            return True
+        try:
+            hostname = urlsplit(f"//{self.headers.get('Host', '')}").hostname
+        except ValueError:
+            return False
+        return hostname is not None and (hostname in LOOPBACK_HOSTS or hostname in self.allowed_hosts)
+
+    def _bound_to_loopback(self) -> bool:
+        try:
+            return ipaddress.ip_address(self.server.server_address[0]).is_loopback
+        except ValueError:
+            return self.server.server_address[0] in LOOPBACK_HOSTS
+
     def is_trusted_request(self) -> bool:
         """Rejects state-changing requests that a browser would send cross-site.
 
-        - A direct request to a loopback-bound server must carry a loopback Host
-          header (defeats DNS rebinding). Requests arriving through a reverse
-          proxy are recognised by their X-Forwarded-*/Forwarded headers, which a
-          cross-site browser request cannot add without a CORS preflight that
-          this server never approves.
         - Sec-Fetch-Site, when present, must be same-origin or none.
-        - Otherwise an Origin header, when present, must match the host the
-          browser addressed (X-Forwarded-Host behind a proxy, else Host).
-        Requests without browser headers (curl, scripts) are unaffected.
+        - Otherwise an Origin header, when present, must equal the Host header.
+        Requests without browser headers (curl, scripts) are unaffected. The Host
+        header itself is validated for all requests by is_host_allowed().
         """
         headers = self.headers
-        host = headers.get("Host", "")
-        proxied = any(h in headers for h in ("X-Forwarded-For", "X-Forwarded-Host", "Forwarded"))
-        if self.server.server_address[0] in LOOPBACK_HOSTS and not proxied:
-            try:
-                hostname = urlsplit(f"//{host}").hostname
-            except ValueError:
-                return False
-            if hostname not in LOOPBACK_HOSTS:
-                return False
         fetch_site = headers.get("Sec-Fetch-Site", "").lower()
         if fetch_site:
             return fetch_site in ("same-origin", "none")
@@ -101,10 +118,12 @@ class AuditWebHandler(BaseHTTPRequestHandler):
             return True
         if origin.lower() == "null":
             return False
-        expected = headers.get("X-Forwarded-Host", host).split(",")[0].strip()
-        return urlsplit(origin).netloc.lower() == expected.lower()
+        return urlsplit(origin).netloc.lower() == headers.get("Host", "").strip().lower()
 
     def do_GET(self) -> None:
+        if not self.is_host_allowed():
+            self.send_json_response({"error": "Host not allowed"}, status=403)
+            return
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
@@ -191,6 +210,9 @@ class AuditWebHandler(BaseHTTPRequestHandler):
             self.send_html_response("<h1>404 Not Found</h1>", status=404)
 
     def do_POST(self) -> None:
+        if not self.is_host_allowed():
+            self.send_json_response({"error": "Host not allowed"}, status=403)
+            return
         if self.path == "/api/audit/run":
             if not self.is_trusted_request():
                 self.send_json_response({"error": "Cross-site request rejected"}, status=403)
@@ -407,9 +429,21 @@ class AuditWebHandler(BaseHTTPRequestHandler):
 """
 
 
-def run_web_server(host: str = "127.0.0.1", port: int = 8080, base_dir: str = "audits") -> None:
-    """Launches the self-hosted audit dashboard server."""
+def run_web_server(
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    base_dir: str = "audits",
+    allowed_hosts: Iterable[str] = (),
+) -> None:
+    """Launches the self-hosted audit dashboard server.
+
+    ``allowed_hosts`` lists extra Host header names to accept besides loopback, for use
+    behind a reverse proxy that forwards the original Host header.
+    """
     AuditWebHandler.base_dir = Path(base_dir)
+    AuditWebHandler.allowed_hosts = frozenset(
+        h for h in (urlsplit(f"//{a.strip()}").hostname for a in allowed_hosts if a.strip()) if h
+    )
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, AuditWebHandler)
     print("======================================================================")
