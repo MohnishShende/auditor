@@ -96,6 +96,10 @@ class MarkdownRenderer:
         lines.append(f"- **Audit Mode:** `{meta.get('audit_mode', 'user').upper()}`")
         lines.append(f"- **Execution Duration:** `{duration:.2f}s`")
         lines.append(f"- **Privilege Status:** `{'Sudo / Root Active' if meta.get('privileges_available') else 'Unprivileged User'}`")
+        if meta.get("platform") not in (None, "Linux"):
+            lines.append(f"- **Platform Support:** ⚠️ Unsupported ({meta.get('platform')}). This tool targets Linux; "
+                         "most modules could not collect data and this report is incomplete. "
+                         "OS and kernel labels below describe this host, not a Linux system.")
         user_mode = str(meta.get("audit_mode", "user")).lower() == "user"
         if user_mode or not meta.get("privileges_available"):
             # Also covers --mode sudo where `sudo -v` failed or was cancelled: the run continues

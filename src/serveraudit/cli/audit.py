@@ -9,6 +9,7 @@ import getpass
 import os
 from pathlib import Path
 import platform
+import sys
 import time
 from typing import Any, Dict, List, Optional
 try:
@@ -33,6 +34,14 @@ from ..topology import (
 )
 from ..analysis import evaluate_health, evaluate_exposure, detect_conflicts
 from ..renderers import MarkdownRenderer, JsonRenderer, HtmlRenderer, PdfRenderer
+
+
+def unsupported_platform_message(system: str) -> Optional[str]:
+    """Warning text for platforms the collectors do not support (None on Linux)."""
+    if system == "Linux":
+        return None
+    return (f"{system} is not a supported platform: this tool targets Linux (it reads /proc and runs "
+            "ip, lsblk, systemctl, ...), so most collectors will report nothing and the report will be incomplete.")
 
 
 class AuditOrchestrator:
@@ -72,6 +81,10 @@ class AuditOrchestrator:
         start_time = time.time()
         now_dt = datetime.datetime.now(datetime.timezone.utc).astimezone()
         timestamp_str = Normalizer.iso_timestamp(now_dt)
+
+        platform_warning = unsupported_platform_message(platform.system())
+        if platform_warning:
+            sys.stderr.write(f"Warning: {platform_warning}\n")  # shown even in --quiet
 
         self.log("======================================================================")
         self.log(f" Linux Server Audit v{__version__}")
@@ -174,6 +187,7 @@ class AuditOrchestrator:
             "hostname": hostname,
             "profile": self.profile,
             "audit_mode": self.mode.value,
+            "platform": platform.system(),
             "duration_seconds": round(total_duration, 4),
             "privileges_available": self.privileges.can_elevate,
             "effective_uid": effective_uid,
