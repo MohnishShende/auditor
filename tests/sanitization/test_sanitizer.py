@@ -102,3 +102,79 @@ def test_public_profile_ip_and_mac_masking():
     assert "WD-WCC4N0123456" not in sanitized_str
     assert "SAMSUNGS59BNC0M123" not in sanitized_str
     assert "4c4c4544-004a-4d10-8032-b2c04f4a3433" not in sanitized_str
+
+
+# Keys that hold secrets: redacted as dictionary keys and as NAME=value strings.
+SECRET_KEY_NAMES = [
+    "password", "DB_PASSWORD", "MYSQL_ROOT_PASSWORD", "PGPASSWORD", "MYSQL_PWD",
+    "db_pass", "smtp_passwd", "passphrase", "JWT_SECRET", "SECRET_KEY_BASE",
+    "client_secret", "API_KEY", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY",
+    "GITHUB_TOKEN", "access_token", "auth_token", "private_key", "dbPassword",
+    "redisPassword", "credentials",
+]
+
+# Keys that describe settings ABOUT secrets, or merely contain "pass"/"auth";
+# their values (yes/no, counts, statuses) must survive sanitization.
+NON_SECRET_KEY_NAMES = [
+    "password_authentication", "pubkey_authentication", "kbd_interactive_authentication",
+    "max_auth_tries", "password_status", "passno", "spec_store_bypass",
+    "overall_health_passed", "PasswordAuthentication", "MaxAuthTries",
+    "permit_root_login", "authorized_keys_file", "host_key_algorithms",
+    "public_key", "key_type", "token_type", "password_expiry_days",
+    "PWD", "OLDPWD", "passthrough", "bypass",
+]
+
+
+@pytest.mark.parametrize("key", SECRET_KEY_NAMES)
+def test_secret_key_names_are_redacted(key):
+    sanitizer = Sanitizer()
+    assert sanitizer.is_secret_key(key)
+    assert sanitizer.sanitize({key: "hunter2"})[key] == "[REDACTED]"
+    assert sanitizer.sanitize(f"{key}=hunter2") == f"{key}=[REDACTED]"
+
+
+@pytest.mark.parametrize("key", NON_SECRET_KEY_NAMES)
+def test_settings_about_secrets_are_preserved(key):
+    sanitizer = Sanitizer()
+    assert not sanitizer.is_secret_key(key)
+    assert sanitizer.sanitize({key: "no"})[key] == "no"
+    assert sanitizer.sanitize(f"{key}=6") == f"{key}=6"
+
+
+def test_audit_fields_survive_private_profile():
+    """Regression: audit.json fields that v0.1.2 redacted although they hold no secret."""
+    sanitizer = Sanitizer(SanitizerConfig.from_profile(SanitizationProfile.PRIVATE))
+    payload = {
+        "ssh": {
+            "effective_config": {
+                "port": 22,
+                "password_authentication": "no",
+                "pubkey_authentication": "yes",
+                "kbd_interactive_authentication": "no",
+                "max_auth_tries": 6,
+            }
+        },
+        "users": {"users": [{"username": "root", "password_status": "LOCKED"}]},
+        "fstab": {"entries": [{"mount_point": "/", "passno": 1}]},
+        "cpu": {"vulnerabilities": {"spec_store_bypass": "Mitigation: Speculative Store Bypass disabled"}},
+        "smart": {"overall_health_passed": True},
+        "docker": {"environment": ["POSTGRES_PASSWORD=hunter2", "TZ=UTC"]},
+    }
+
+    out = sanitizer.sanitize(payload)
+
+    assert out["ssh"]["effective_config"]["password_authentication"] == "no"
+    assert out["ssh"]["effective_config"]["pubkey_authentication"] == "yes"
+    assert out["ssh"]["effective_config"]["kbd_interactive_authentication"] == "no"
+    assert out["ssh"]["effective_config"]["max_auth_tries"] == 6
+    assert out["users"]["users"][0]["password_status"] == "LOCKED"
+    assert out["fstab"]["entries"][0]["passno"] == 1
+    assert out["cpu"]["vulnerabilities"]["spec_store_bypass"].startswith("Mitigation")
+    assert out["smart"]["overall_health_passed"] is True
+    assert out["docker"]["environment"] == ["POSTGRES_PASSWORD=[REDACTED]", "TZ=UTC"]
+
+
+def test_named_values_in_free_text():
+    sanitizer = Sanitizer()
+    text = "MaxAuthTries=6 PasswordAuthentication=no DB_PASS=hunter2 token: abc123"
+    assert sanitizer.sanitize(text) == "MaxAuthTries=6 PasswordAuthentication=no DB_PASS=[REDACTED] token:[REDACTED]"
